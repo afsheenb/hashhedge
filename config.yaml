@@ -1,0 +1,21 @@
+# config.yaml
+server:
+  host: "0.0.0.0"
+  port: 8080
+  read_timeout: 10s
+  write_timeout: 10s
+  idle_timeout: 30s
+
+database:
+  host: "localhost"
+  port: 5432
+  user: "hashhedge"
+  password: "hashhedge"
+  dbname: "hashhedge"
+  sslmode: "disable"
+
+bitcoin:
+  host: "localhost:8332"
+  user: "bitcoinrpc"
+  password: "rpcpassword"
+  use_tls: false
