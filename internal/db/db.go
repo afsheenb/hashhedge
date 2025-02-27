@@ -46,30 +46,31 @@ func New(cfg Config) (*DB, error) {
 	return &DB{DB: db}, nil
 }
 
+
 // WithTransaction executes a function within a transaction
 func (db *DB) WithTransaction(ctx context.Context, fn func(*sqlx.Tx) error) error {
-	tx, err := db.BeginTxx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("failed to begin transaction: %w", err)
-	}
+    tx, err := db.BeginTxx(ctx, nil)
+    if err != nil {
+        return fmt.Errorf("failed to begin transaction: %w", err)
+    }
 
-	defer func() {
-		if p := recover(); p != nil {
-			_ = tx.Rollback()
-			panic(p) // Re-throw panic after rollback
-		}
-	}()
+    defer func() {
+        if p := recover(); p != nil {
+            _ = tx.Rollback()
+            panic(p) // Re-throw panic after rollback
+        }
+    }()
 
-	if err := fn(tx); err != nil {
-		if rbErr := tx.Rollback(); rbErr != nil {
-			return fmt.Errorf("error rolling back: %v (original error: %w)", rbErr, err)
-		}
-		return err
-	}
+    if err := fn(tx); err != nil {
+        if rbErr := tx.Rollback(); rbErr != nil {
+            return fmt.Errorf("error rolling back: %v (original error: %w)", rbErr, err)
+        }
+        return err
+    }
 
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("failed to commit transaction: %w", err)
-	}
+    if err := tx.Commit(); err != nil {
+        return fmt.Errorf("failed to commit transaction: %w", err)
+    }
 
-	return nil
+    return nil
 }

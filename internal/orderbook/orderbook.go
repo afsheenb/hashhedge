@@ -7,34 +7,38 @@ import (
 	"sync"
 	"time"
 
+    "github.com/jmoiron/sqlx"
 	"github.com/google/uuid"
 	"hashhedge/internal/contract"
 	"hashhedge/internal/db"
 	"hashhedge/internal/models"
 )
 
-// OrderBook manages the order book for hash rate contracts
 type OrderBook struct {
-	orderRepo    *db.OrderRepository
-	tradeRepo    *db.TradeRepository
-	contractRepo *db.ContractRepository
-	contractSvc  *contract.Service
-	mu           sync.RWMutex
+    orderRepo    *db.OrderRepository
+    tradeRepo    *db.TradeRepository
+    contractRepo *db.ContractRepository
+    contractSvc  *contract.Service
+    db           *db.DB
+    mu           sync.RWMutex
 }
 
-// NewOrderBook creates a new order book
+
+// NewOrderBook creates a new order book - update constructor
 func NewOrderBook(
-	orderRepo *db.OrderRepository,
-	tradeRepo *db.TradeRepository,
-	contractRepo *db.ContractRepository,
-	contractSvc *contract.Service,
+    db *db.DB,
+    orderRepo *db.OrderRepository,
+    tradeRepo *db.TradeRepository,
+    contractRepo *db.ContractRepository,
+    contractSvc *contract.Service,
 ) *OrderBook {
-	return &OrderBook{
-		orderRepo:    orderRepo,
-		tradeRepo:    tradeRepo,
-		contractRepo: contractRepo,
-		contractSvc:  contractSvc,
-	}
+    return &OrderBook{
+        db:           db,
+        orderRepo:    orderRepo,
+        tradeRepo:    tradeRepo,
+        contractRepo: contractRepo,
+        contractSvc:  contractSvc,
+    }
 }
 
 // PlaceOrder adds a new order to the order book

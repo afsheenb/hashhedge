@@ -70,6 +70,7 @@ func main() {
 	)
 	
 	orderBook := orderbook.NewOrderBook(
+		database,
 		orderRepo,
 		tradeRepo,
 		contractRepo,

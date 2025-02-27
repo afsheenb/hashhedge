@@ -1,4 +1,3 @@
-G/ pkg/bitcoin/client.go
 package bitcoin
 
 import (
