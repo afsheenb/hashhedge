@@ -186,6 +186,25 @@ export const fetchContractTransactions = createAsyncThunk(
   }
 );
 
+export const checkSettlementConditions = createAsyncThunk(
+  'contracts/checkSettlement',
+  async (id: string, { rejectWithValue }) => {
+    try {
+      const response = await contractService.checkSettlementConditions(id);
+
+      if (!response.success) {
+        return rejectWithValue(response.error || 'Failed to check settlement conditions');
+      }
+
+      return response.data;
+    } catch (error) {
+      return rejectWithValue(
+        error instanceof Error ? error.message : 'An unknown error occurred'
+      );
+    }
+  }
+)
+
 // Contract slice
 const contractSlice = createSlice({
   name: 'contracts',
@@ -359,10 +378,11 @@ const contractSlice = createSlice({
     // Fetch contract transactions
     builder.addCase(fetchContractTransactions.pending, (state) => {
       state.loading = true;
+      state.error = null;
     });
     builder.addCase(fetchContractTransactions.fulfilled, (state, action) => {
       state.loading = false;
-      state.transactions = action.payload.transactions;
+      state.transactions = action.payload;
     });
     builder.addCase(fetchContractTransactions.rejected, (state, action) => {
       state.loading = false;

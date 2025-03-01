@@ -126,12 +126,23 @@ export interface HashRateData {
 export interface ContractTransaction {
   id: string;
   contract_id: string;
-  transaction_id: string;
-  tx_type: 'setup' | 'final' | 'settlement' | 'swap';
+  tx_type: string;
   tx_hex: string;
-  confirmed: boolean;
+  status: string;
   created_at: string;
+  transaction_id: string;
+  confirmed: boolean;
   confirmed_at?: string;
+  address?: string; // For setup transactions
+}
+
+export interface SetupContractForm {
+  amount: number;
+}
+
+export interface SwapContractParticipantForm {
+  participant_type: string;
+  new_pub_key: string;
 }
 
 // Form types
@@ -159,15 +170,10 @@ export interface PlaceOrderForm {
   expires_in?: number;
 }
 
-export interface SetupContractForm {
-  buyer_inputs: string[];
-  seller_inputs: string[];
-}
-
 export interface SwapContractParticipantForm {
   old_pub_key: string;
   new_pub_key: string;
-  new_participant_input: string;
+  new_participant_type: string;
 }
 
 export interface AuthForm {
@@ -212,11 +218,19 @@ export interface AuthState {
 
 export interface ContractState {
   contracts: Contract[];
-  selectedContract: Contract | null;
+  contract: Contract | null;
   transactions: ContractTransaction[];
   loading: boolean;
   error: string | null;
 }
+
+const initialState: ContractState = {
+  contracts: [],
+  contract: null,
+  transactions: [],
+  loading: false,
+  error: null,
+};
 
 export interface OrderState {
   orders: Order[];
