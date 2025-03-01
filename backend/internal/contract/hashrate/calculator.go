@@ -1,4 +1,3 @@
-
 // internal/contract/hashrate/calculator.go
 package hashrate
 
@@ -6,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"sync"
 	"time"
 
 	"hashhedge/pkg/bitcoin"
@@ -14,17 +14,38 @@ import (
 // HashRateCalculator calculates the current Bitcoin network hash rate
 type HashRateCalculator struct {
 	client *bitcoin.Client
+	// Cache the last calculation to reduce RPC calls
+	cacheMutex      sync.RWMutex
+	lastCalculation *HashRate
+	lastCalcTime    time.Time
+	cacheDuration   time.Duration
 }
 
 // New creates a new HashRateCalculator
 func New(client *bitcoin.Client) *HashRateCalculator {
 	return &HashRateCalculator{
-		client: client,
+		client:       client,
+		cacheDuration: time.Minute * 5, // Default 5 minute cache
 	}
+}
+
+// WithCacheDuration sets a custom cache duration
+func (c *HashRateCalculator) WithCacheDuration(duration time.Duration) *HashRateCalculator {
+	c.cacheDuration = duration
+	return c
 }
 
 // CalculateCurrentHashRate calculates the current network hash rate in EH/s
 func (c *HashRateCalculator) CalculateCurrentHashRate(ctx context.Context) (float64, error) {
+	// Check cache first
+	c.cacheMutex.RLock()
+	if c.lastCalculation != nil && time.Since(c.lastCalcTime) < c.cacheDuration {
+		result := *c.lastCalculation
+		c.cacheMutex.RUnlock()
+		return result, nil
+	}
+	c.cacheMutex.RUnlock()
+
 	// Get the latest block info to calculate difficulty and time between blocks
 	bestBlockHash, err := c.client.GetBestBlockHash(ctx)
 	if err != nil {
@@ -53,6 +74,12 @@ func (c *HashRateCalculator) CalculateCurrentHashRate(ctx context.Context) (floa
 	// This converts to exahashes per second (EH/s)
 	hashRate := (float64(bestBlock.Difficulty) * math.Pow(2, 32)) / (timeDiff * 1e12)
 
+	// Update cache
+	c.cacheMutex.Lock()
+	c.lastCalculation = &hashRate
+	c.lastCalcTime = time.Now()
+	c.cacheMutex.Unlock()
+
 	return hashRate, nil
 }
 
@@ -65,42 +92,63 @@ func (c *HashRateCalculator) CalculateHashRateForPeriod(
 		return 0, fmt.Errorf("start height must be less than end height")
 	}
 
-	// Get blocks at start and end height
-	startBlockHash, err := c.client.GetBlockHash(ctx, startHeight)
-	if err != nil {
-		return 0, fmt.Errorf("failed to get start block hash: %w", err)
+	// Use a sliding window approach for more accurate calculation
+	windowSize := int64(10) // Use up to 10 blocks for sliding window
+	if windowSize > (endHeight - startHeight) {
+		windowSize = endHeight - startHeight
 	}
-
-	startBlock, err := c.client.GetBlock(ctx, startBlockHash)
-	if err != nil {
-		return 0, fmt.Errorf("failed to get start block: %w", err)
-	}
-
-	endBlockHash, err := c.client.GetBlockHash(ctx, endHeight)
-	if err != nil {
-		return 0, fmt.Errorf("failed to get end block hash: %w", err)
-	}
-
-	endBlock, err := c.client.GetBlock(ctx, endBlockHash)
-	if err != nil {
-		return 0, fmt.Errorf("failed to get end block: %w", err)
-	}
-
-	// Calculate time difference in seconds
-	timeDiff := endBlock.Time.Sub(startBlock.Time).Seconds()
-	if timeDiff <= 0 {
-		return 0, fmt.Errorf("invalid time difference between blocks: %v", timeDiff)
-	}
-
-	// Calculate blocks per day
-	blocksMined := endHeight - startHeight
-	secondsPerBlock := timeDiff / float64(blocksMined)
 	
-	// Use the average difficulty over the period
-	avgDifficulty := (startBlock.Difficulty + endBlock.Difficulty) / 2
+	totalDifficulty := 0.0
+	totalTime := 0.0
+	blocksProcessed := 0
+
+	for i := int64(0); i < windowSize; i++ {
+		height := endHeight - i
+		prevHeight := height - 1
+		
+		if prevHeight < startHeight {
+			break
+		}
+		
+		blockHash, err := c.client.GetBlockHash(ctx, height)
+		if err != nil {
+			return 0, fmt.Errorf("failed to get block hash at height %d: %w", height, err)
+		}
+		
+		block, err := c.client.GetBlock(ctx, blockHash)
+		if err != nil {
+			return 0, fmt.Errorf("failed to get block at height %d: %w", height, err)
+		}
+		
+		prevBlockHash, err := c.client.GetBlockHash(ctx, prevHeight)
+		if err != nil {
+			return 0, fmt.Errorf("failed to get previous block hash at height %d: %w", prevHeight, err)
+		}
+		
+		prevBlock, err := c.client.GetBlock(ctx, prevBlockHash)
+		if err != nil {
+			return 0, fmt.Errorf("failed to get previous block at height %d: %w", prevHeight, err)
+		}
+		
+		// Calculate time difference
+		timeDiff := block.Time.Sub(prevBlock.Time).Seconds()
+		if timeDiff > 0 {
+			totalTime += timeDiff
+			totalDifficulty += block.Difficulty
+			blocksProcessed++
+		}
+	}
+	
+	if blocksProcessed == 0 {
+		return 0, fmt.Errorf("no valid blocks found in the specified range")
+	}
+
+	// Average values
+	avgTimeDiff := totalTime / float64(blocksProcessed)
+	avgDifficulty := totalDifficulty / float64(blocksProcessed)
 
 	// Calculate hash rate: (difficulty * 2^32) / (time * 10^12)
-	hashRate := (float64(avgDifficulty) * math.Pow(2, 32)) / (secondsPerBlock * 1e12)
+	hashRate := (avgDifficulty * math.Pow(2, 32)) / (avgTimeDiff * 1e12)
 
 	return hashRate, nil
 }
@@ -162,4 +210,29 @@ func (c *HashRateCalculator) CheckHashRateBeforeTime(
 
 	// We haven't reached the target height yet and the target time hasn't passed
 	return false, nil
+}
+
+// GetAverageHashRate calculates the average hash rate over the last N blocks
+func (c *HashRateCalculator) GetAverageHashRate(
+	ctx context.Context,
+	numBlocks int64,
+) (float64, error) {
+	// Get current tip
+	bestBlockHash, err := c.client.GetBestBlockHash(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("failed to get best block hash: %w", err)
+	}
+
+	bestBlock, err := c.client.GetBlock(ctx, bestBlockHash)
+	if err != nil {
+		return 0, fmt.Errorf("failed to get best block: %w", err)
+	}
+	
+	endHeight := bestBlock.Height
+	startHeight := endHeight - numBlocks
+	if startHeight < 0 {
+		startHeight = 0
+	}
+	
+	return c.CalculateHashRateForPeriod(ctx, startHeight, endHeight)
 }

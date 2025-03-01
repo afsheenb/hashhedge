@@ -122,6 +122,9 @@ func (s *Service) parseTransactionInput(ctx context.Context, txHex string) (*wir
 	return &tx, nil
 }
 
+// internal/contract/service.go
+// Implementation of GenerateSetupTransaction
+
 // GenerateSetupTransaction creates the setup transaction for a contract
 func (s *Service) GenerateSetupTransaction(
 	ctx context.Context,
@@ -165,37 +168,57 @@ func (s *Service) GenerateSetupTransaction(
 	var totalInputAmount int64
 	
 	// Parse and add buyer inputs
-	for i, inputTx := range buyerInputs {
-		// Parse the transaction
-		msgTx, err := s.parseTransactionInput(ctx, inputTx)
+	for i, inputTxHex := range buyerInputs {
+		// Decode the transaction hex
+		inputTxBytes, err := hex.DecodeString(inputTxHex)
 		if err != nil {
+			return nil, fmt.Errorf("invalid buyer input %d hex: %w", i, err)
+		}
+		
+		// Parse the transaction
+		var inputTx wire.MsgTx
+		if err := inputTx.Deserialize(bytes.NewReader(inputTxBytes)); err != nil {
 			return nil, fmt.Errorf("invalid buyer input %d: %w", i, err)
 		}
 		
+		if len(inputTx.TxOut) == 0 {
+			return nil, fmt.Errorf("buyer input %d has no outputs", i)
+		}
+		
 		// Add the first output as an input (simplified - in reality would need to select proper UTXO)
-		outPoint := wire.NewOutPoint(&msgTx.TxHash(), 0)
+		outPoint := wire.NewOutPoint(&inputTx.TxHash(), 0)
 		txIn := wire.NewTxIn(outPoint, nil, nil)
 		tx.AddTxIn(txIn)
 		
 		// Track input amount
-		totalInputAmount += msgTx.TxOut[0].Value
+		totalInputAmount += inputTx.TxOut[0].Value
 	}
 	
 	// Parse and add seller inputs
-	for i, inputTx := range sellerInputs {
-		// Parse the transaction
-		msgTx, err := s.parseTransactionInput(ctx, inputTx)
+	for i, inputTxHex := range sellerInputs {
+		// Decode the transaction hex
+		inputTxBytes, err := hex.DecodeString(inputTxHex)
 		if err != nil {
+			return nil, fmt.Errorf("invalid seller input %d hex: %w", i, err)
+		}
+		
+		// Parse the transaction
+		var inputTx wire.MsgTx
+		if err := inputTx.Deserialize(bytes.NewReader(inputTxBytes)); err != nil {
 			return nil, fmt.Errorf("invalid seller input %d: %w", i, err)
 		}
 		
+		if len(inputTx.TxOut) == 0 {
+			return nil, fmt.Errorf("seller input %d has no outputs", i)
+		}
+		
 		// Add the first output as an input
-		outPoint := wire.NewOutPoint(&msgTx.TxHash(), 0)
+		outPoint := wire.NewOutPoint(&inputTx.TxHash(), 0)
 		txIn := wire.NewTxIn(outPoint, nil, nil)
 		tx.AddTxIn(txIn)
 		
 		// Track input amount
-		totalInputAmount += msgTx.TxOut[0].Value
+		totalInputAmount += inputTx.TxOut[0].Value
 	}
 	
 	// Validate input amount
@@ -218,18 +241,26 @@ func (s *Service) GenerateSetupTransaction(
 	contractOutput := wire.NewTxOut(contract.ContractSize, contractScript)
 	tx.AddTxOut(contractOutput)
 	
-	// Calculate change amount (simplified)
-	changeAmount := totalInputAmount - contract.ContractSize - 1000 // 1000 satoshis for fees
+	// Calculate change amount (accounting for fees)
+	// In a real implementation, use proper fee estimation
+	feeRate := int64(5) // sats per byte
+	estimatedSize := tx.SerializeSize() + 100 // Add some buffer for signatures
+	estimatedFee := int64(estimatedSize) * feeRate
 	
-	// Add change output for buyer (if needed)
+	changeAmount := totalInputAmount - contract.ContractSize - estimatedFee
+	
+	// Add change output for buyer and seller if needed
 	if changeAmount > 0 {
-		// Decode buyer's public key
+		// Split change between buyer and seller
+		buyerChange := changeAmount / 2
+		sellerChange := changeAmount - buyerChange
+		
+		// Create buyer change output
 		buyerPKBytes, err := hex.DecodeString(contract.BuyerPubKey)
 		if err != nil {
 			return nil, fmt.Errorf("invalid buyer public key: %w", err)
 		}
 		
-		// Create a P2PKH address for buyer's change
 		buyerPKHash := btcutil.Hash160(buyerPKBytes)
 		buyerChangeScript, err := txscript.NewScriptBuilder().
 			AddOp(txscript.OP_DUP).
@@ -242,11 +273,13 @@ func (s *Service) GenerateSetupTransaction(
 			return nil, fmt.Errorf("failed to create buyer change script: %w", err)
 		}
 		
-		// Add buyer change output
-		changeOutput := wire.NewTxOut(changeAmount/2, buyerChangeScript)
-		tx.AddTxOut(changeOutput)
+		// Add buyer change output if non-dust
+		if buyerChange >= 546 { // 546 sats is dust limit
+			buyerChangeOutput := wire.NewTxOut(buyerChange, buyerChangeScript)
+			tx.AddTxOut(buyerChangeOutput)
+		}
 		
-		// Add seller change output
+		// Create seller change output
 		sellerPKBytes, err := hex.DecodeString(contract.SellerPubKey)
 		if err != nil {
 			return nil, fmt.Errorf("invalid seller public key: %w", err)
@@ -264,8 +297,11 @@ func (s *Service) GenerateSetupTransaction(
 			return nil, fmt.Errorf("failed to create seller change script: %w", err)
 		}
 		
-		sellerChangeOutput := wire.NewTxOut(changeAmount/2, sellerChangeScript)
-		tx.AddTxOut(sellerChangeOutput)
+		// Add seller change output if non-dust
+		if sellerChange >= 546 {
+			sellerChangeOutput := wire.NewTxOut(sellerChange, sellerChangeScript)
+			tx.AddTxOut(sellerChangeOutput)
+		}
 	}
 	
 	// Serialize the transaction
@@ -288,15 +324,11 @@ func (s *Service) GenerateSetupTransaction(
 		CreatedAt:     time.Now().UTC(),
 	}
 
-	// Validate the transaction record
-	if err := txRecord.Validate(); err != nil {
-		return nil, fmt.Errorf("invalid transaction record: %w", err)
-	}
-
 	// Update contract status and set setup tx ID
 	contract.Status = models.ContractStatusActive
 	contract.SetupTxID = &txRecord.TransactionID
 	contract.UpdatedAt = time.Now().UTC()
+	
 	err = s.contractRepo.Update(ctx, contract)
 	if err != nil {
 		return nil, fmt.Errorf("failed to update contract status: %w", err)
@@ -433,6 +465,10 @@ func (s *Service) GenerateFinalTransaction(
 	return txRecord, nil
 }
 
+
+// internal/contract/service.go
+// Implementation of SettleContract
+
 // SettleContract settles the contract based on the actual hash rate
 func (s *Service) SettleContract(
 	ctx context.Context,
@@ -449,7 +485,17 @@ func (s *Service) SettleContract(
 		return nil, false, fmt.Errorf("contract is not active")
 	}
 
-	// Check if we've reached the end block height or target timestamp
+	// Check if settlement conditions are met
+	canSettle, reason, err := s.CheckSettlementConditions(ctx, contractID)
+	if err != nil {
+		return nil, false, fmt.Errorf("failed to check settlement conditions: %w", err)
+	}
+	
+	if !canSettle {
+		return nil, false, fmt.Errorf("contract cannot be settled: %s", reason)
+	}
+
+	// Get the current blockchain state
 	bestBlockHash, err := s.bitcoinClient.GetBestBlockHash(ctx)
 	if err != nil {
 		return nil, false, fmt.Errorf("failed to get best block hash: %w", err)
@@ -460,58 +506,18 @@ func (s *Service) SettleContract(
 		return nil, false, fmt.Errorf("failed to get best block: %w", err)
 	}
 
-	// Check if settlement conditions are met
-	canSettle := false
-	
-	if bestBlock.Height >= contract.EndBlockHeight {
-		canSettle = true
-	} else if time.Now().After(contract.TargetTimestamp) {
-		canSettle = true
-	} else {
-		return nil, false, fmt.Errorf("contract conditions not met for settlement")
-	}
-	
-	if !canSettle {
-		return nil, false, fmt.Errorf("contract cannot be settled yet")
-	}
-
 	// Determine the winner based on the contract type and actual conditions
 	buyerWins := false
 	if bestBlock.Height >= contract.EndBlockHeight {
 		// The end block height was reached before the target time
+		// For CALL options, this means high hash rate, so buyer wins
+		// For PUT options, this means high hash rate, so seller wins
 		buyerWins = contract.ContractType == models.ContractTypeCall
 	} else {
 		// The target time was reached before the end block height
+		// For CALL options, this means low hash rate, so seller wins
+		// For PUT options, this means low hash rate, so buyer wins
 		buyerWins = contract.ContractType == models.ContractTypePut
-	}
-
-	// Get the final transaction
-	finalTxs, err := s.contractRepo.GetTransactionsByContractID(ctx, contractID)
-	if err != nil {
-		return nil, false, fmt.Errorf("failed to get contract transactions: %w", err)
-	}
-	
-	var finalTx *models.ContractTransaction
-	for _, tx := range finalTxs {
-		if tx.TxType == "final" {
-			finalTx = tx
-			break
-		}
-	}
-	
-	if finalTx == nil {
-		return nil, false, errors.New("final transaction not found")
-	}
-
-	// Parse the final transaction
-	finalTxBytes, err := hex.DecodeString(finalTx.TxHex)
-	if err != nil {
-		return nil, false, fmt.Errorf("failed to decode final transaction: %w", err)
-	}
-	
-	var finalMsgTx wire.MsgTx
-	if err := finalMsgTx.Deserialize(bytes.NewReader(finalTxBytes)); err != nil {
-		return nil, false, fmt.Errorf("failed to deserialize final transaction: %w", err)
 	}
 
 	// Determine winner's public key
@@ -522,7 +528,48 @@ func (s *Service) SettleContract(
 		winnerPubKey = contract.SellerPubKey
 	}
 
-// Create settlement script
+	// We need to get the final transaction
+	var finalTx *models.ContractTransaction
+	
+	// Check if we already have a final transaction
+	if contract.FinalTxID != nil {
+		// Get all transactions for this contract
+		txs, err := s.contractRepo.GetTransactionsByContractID(ctx, contractID)
+		if err != nil {
+			return nil, false, fmt.Errorf("failed to get contract transactions: %w", err)
+		}
+		
+		// Find the final transaction
+		for _, tx := range txs {
+			if tx.TxType == "final" && tx.TransactionID == *contract.FinalTxID {
+				finalTx = tx
+				break
+			}
+		}
+		
+		if finalTx == nil {
+			return nil, false, errors.New("final transaction not found even though it's referenced")
+		}
+	} else {
+		// We need to create the final transaction
+		finalTx, err = s.GenerateFinalTransaction(ctx, contractID)
+		if err != nil {
+			return nil, false, fmt.Errorf("failed to generate final transaction: %w", err)
+		}
+	}
+
+	// Parse the final transaction to get its outputs
+	finalTxBytes, err := hex.DecodeString(finalTx.TxHex)
+	if err != nil {
+		return nil, false, fmt.Errorf("failed to decode final transaction: %w", err)
+	}
+	
+	var finalMsgTx wire.MsgTx
+	if err := finalMsgTx.Deserialize(bytes.NewReader(finalTxBytes)); err != nil {
+		return nil, false, fmt.Errorf("failed to deserialize final transaction: %w", err)
+	}
+
+	// Create settlement script
 	settlementScript, err := s.taprootScriptBuilder.BuildSettlementScript(
 		winnerPubKey,
 	)
@@ -551,7 +598,7 @@ func (s *Service) SettleContract(
 	
 	// The output value is slightly less than input to account for fees
 	inputValue := finalMsgTx.TxOut[0].Value
-	settlementOutput := wire.NewTxOut(inputValue - 500, settlementScriptPubKey)
+	settlementOutput := wire.NewTxOut(inputValue - 500, settlementScriptPubKey) // 500 sats for fees
 	tx.AddTxOut(settlementOutput)
 	
 	// Serialize the settlement transaction
@@ -574,15 +621,11 @@ func (s *Service) SettleContract(
 		CreatedAt:     time.Now().UTC(),
 	}
 
-	// Validate the transaction record
-	if err := txRecord.Validate(); err != nil {
-		return nil, false, fmt.Errorf("invalid transaction record: %w", err)
-	}
-
 	// Update contract status and set settlement tx ID
 	contract.Status = models.ContractStatusSettled
 	contract.SettlementTxID = &txRecord.TransactionID
 	contract.UpdatedAt = time.Now().UTC()
+	
 	err = s.contractRepo.Update(ctx, contract)
 	if err != nil {
 		return nil, false, fmt.Errorf("failed to update contract status: %w", err)
@@ -593,9 +636,21 @@ func (s *Service) SettleContract(
 	if err != nil {
 		return nil, false, fmt.Errorf("failed to add transaction: %w", err)
 	}
+	
+	// Try to broadcast the transaction
+	_, err = s.bitcoinClient.BroadcastTransaction(ctx, txHex)
+	if err != nil {
+		// Just log the error - we still return the transaction
+		// so the user can broadcast it manually if needed
+		log.Error().Err(err).
+			Str("contractID", contractID.String()).
+			Str("txid", txid).
+			Msg("Failed to broadcast settlement transaction")
+	}
 
 	return txRecord, buyerWins, nil
 }
+
 
 // ListActiveContracts retrieves all active contracts
 func (s *Service) ListActiveContracts(ctx context.Context, limit, offset int) ([]*models.Contract, error) {
