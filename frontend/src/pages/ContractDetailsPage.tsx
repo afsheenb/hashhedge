@@ -1,26 +1,31 @@
-// src/pages/ContractDetailsPage.tsx (updated)
 import React, { useEffect, useState } from 'react';
-import { 
-  Container, 
-  Box, 
-  useToast, 
-  Button, 
-  HStack,
-  Alert,
-  AlertIcon,
-  AlertTitle,
-  AlertDescription,
-  useDisclosure
+import {
+  Container,
+  Box,
+  Grid,
+  GridItem,
+  Button,
+  useDisclosure,
+  useToast,
+  Flex,
+  Tabs,
+  TabList,
+  TabPanels,
+  Tab,
+  TabPanel,
 } from '@chakra-ui/react';
 import { useParams, useNavigate } from 'react-router-dom';
-import MainLayout from '../components/layout/MainLayout';
+import { useAppDispatch, useAppSelector } from '../hooks/redux-hooks';
+import { fetchContract, fetchContractTransactions } from '../store/contract-slice';
+import Layout from '../components/layout/Layout';
 import ContractDetails from '../components/contracts/ContractDetails';
-import ContractFunding from '../components/contracts/ContractFunding'; // Added
-import ContractSigningModal from '../components/contracts/ContractSigningModal'; // Added
+import ContractTransactionsList from '../components/contracts/ContractTransactionsList';
+import ContractFunding from '../components/contracts/ContractFunding';
+import ContractSigningModal from '../components/contracts/ContractSigningModal';
 import LoadingSpinner from '../components/common/LoadingSpinner';
 import ErrorDisplay from '../components/common/ErrorDisplay';
-import { useAppDispatch, useAppSelector } from '../hooks/redux-hooks';
-import { fetchContract, fetchContractTransactions, generateFinalTx, settleContract } from '../store/contract-slice';
+import HashRateChart from '../components/hashrate/HashRateChart';
+import PageHeader from '../components/common/PageHeader';
 
 const ContractDetailsPage: React.FC = () => {
   const { id } = useParams<{ id: string }>();
@@ -28,202 +33,129 @@ const ContractDetailsPage: React.FC = () => {
   const dispatch = useAppDispatch();
   const toast = useToast();
   
-  // For contract signing modal
-  const { isOpen: isSigningModalOpen, onOpen: onOpenSigningModal, onClose: onCloseSigningModal } = useDisclosure();
-  const [selectedTx, setSelectedTx] = useState<string | null>(null);
+  const [selectedTransaction, setSelectedTransaction] = useState<any>(null);
   
-  const { selectedContract, transactions, loading, error } = useAppSelector(
-    (state) => state.contracts
-  );
+  const { isOpen, onOpen, onClose } = useDisclosure();
   
-  const { isConnected } = useAppSelector(
-    (state) => state.arkWallet
-  );
-
+  const { contract, transactions, loading, error } = useAppSelector((state) => state.contracts);
+  
   useEffect(() => {
     if (id) {
       dispatch(fetchContract(id));
       dispatch(fetchContractTransactions(id));
     }
   }, [dispatch, id]);
-
-  // Handle generating a final transaction
-  const handleGenerateFinalTx = async () => {
-    if (!id) return;
+  
+  const handleBackToContracts = () => {
+    navigate('/contracts');
+  };
+  
+  const handleOpenSigningModal = (transaction: any) => {
+    setSelectedTransaction(transaction);
+    onOpen();
+  };
+  
+  const handleSigningSuccess = () => {
+    toast({
+      title: "Transaction signed",
+      description: "The transaction has been signed successfully",
+      status: "success",
+      duration: 3000,
+      isClosable: true,
+    });
     
-    try {
-      const result = await dispatch(generateFinalTx(id)).unwrap();
-      toast({
-        title: 'Final transaction generated',
-        description: 'The final transaction has been successfully generated.',
-        status: 'success',
-        duration: 3000,
-        isClosable: true,
-      });
-      
-      // Open signing modal with the new transaction
-      setSelectedTx('final');
-      onOpenSigningModal();
-    } catch (error) {
-      toast({
-        title: 'Error',
-        description: error as string,
-        status: 'error',
-        duration: 5000,
-        isClosable: true,
-      });
+    // Refresh contract transactions
+    if (id) {
+      dispatch(fetchContractTransactions(id));
     }
   };
-
-  // Handle settling a contract
-  const handleSettleContract = async () => {
-    if (!id) return;
-    
-    try {
-      const result = await dispatch(settleContract(id)).unwrap();
-      toast({
-        title: 'Contract settled',
-        description: 'The contract has been successfully settled.',
-        status: 'success',
-        duration: 3000,
-        isClosable: true,
-      });
-      
-      // Open signing modal with the settlement transaction
-      setSelectedTx('settlement');
-      onOpenSigningModal();
-    } catch (error) {
-      toast({
-        title: 'Error',
-        description: error as string,
-        status: 'error',
-        duration: 5000,
-        isClosable: true,
-      });
-    }
-  };
-
-  if (loading && !selectedContract) {
-    return (
-      <MainLayout>
-        <Container maxW="container.xl" py={8}>
-          <LoadingSpinner message="Loading contract details..." />
-        </Container>
-      </MainLayout>
-    );
+  
+  if (loading && !contract) {
+    return <LoadingSpinner message="Loading contract details..." />;
   }
-
+  
   if (error) {
-    return (
-      <MainLayout>
-        <Container maxW="container.xl" py={8}>
-          <ErrorDisplay 
-            message={error} 
-            onRetry={() => {
-              if (id) {
-                dispatch(fetchContract(id));
-                dispatch(fetchContractTransactions(id));
-              }
-            }} 
-          />
-        </Container>
-      </MainLayout>
-    );
+    return <ErrorDisplay message={error} />;
   }
-
-  if (!selectedContract) {
-    return (
-      <MainLayout>
-        <Container maxW="container.xl" py={8}>
-          <Box textAlign="center">
-            Contract not found. The contract ID may be invalid.
-          </Box>
-        </Container>
-      </MainLayout>
-    );
+  
+  if (!contract) {
+    return <ErrorDisplay message="Contract not found" />;
   }
-
-  // Get the appropriate transaction based on the selected type
-  const getSelectedTransaction = () => {
-    if (!selectedTx || !transactions.length) return null;
-    
-    return transactions.find(tx => tx.tx_type === selectedTx);
-  };
-
+  
   return (
-    <MainLayout>
-      <Container maxW="container.xl" py={8}>
-        {!isConnected && (
-          <Alert status="warning" mb={6}>
-            <AlertIcon />
-            <AlertTitle>Wallet not connected</AlertTitle>
-            <AlertDescription>
-              Connect your wallet to interact with this contract.
-            </AlertDescription>
-          </Alert>
-        )}
-        
-        <ContractDetails
-          contract={selectedContract}
-          transactions={transactions}
+    <Layout>
+      <Container maxW="container.xl" py={6}>
+        <PageHeader
+          title="Contract Details"
+          action={{
+            label: "Back to Contracts",
+            onClick: handleBackToContracts,
+          }}
         />
         
-        {/* Wallet integration for contract */}
-        {isConnected && selectedContract.status === 'CREATED' && (
-          <Box mt={6}>
+        <Grid templateColumns={{ base: "1fr", lg: "2fr 1fr" }} gap={6} mt={6}>
+          <GridItem>
+            <Box mb={6}>
+              <ContractDetails 
+                contract={contract} 
+                transactions={transactions}
+                showTransactions={false}
+              />
+            </Box>
+            
+            <Tabs isLazy variant="enclosed" mt={6}>
+              <TabList>
+                <Tab>Transactions</Tab>
+                <Tab>Hash Rate Chart</Tab>
+              </TabList>
+              
+              <TabPanels>
+                <TabPanel px={0}>
+                  <Box mt={4}>
+                    <ContractTransactionsList 
+                      transactions={transactions} 
+                      onSignTransaction={handleOpenSigningModal}
+                    />
+                  </Box>
+                </TabPanel>
+                
+                <TabPanel px={0}>
+                  <Box mt={4}>
+                    <HashRateChart 
+                      height={400}
+                      referenceValue={contract.strike_hash_rate}
+                      referenceLabel={`Strike: ${contract.strike_hash_rate} EH/s`}
+                    />
+                  </Box>
+                </TabPanel>
+              </TabPanels>
+            </Tabs>
+          </GridItem>
+          
+          <GridItem>
             <ContractFunding 
-              contract={selectedContract} 
+              contract={contract}
               onSuccess={() => {
                 if (id) {
                   dispatch(fetchContract(id));
                 }
               }}
             />
-          </Box>
-        )}
+          </GridItem>
+        </Grid>
         
-        {/* Action buttons for contract lifecycle */}
-        {isConnected && (
-          <HStack mt={6} spacing={4} justifyContent="flex-end">
-            {selectedContract.status === 'ACTIVE' && selectedContract.setup_tx_id && !selectedContract.final_tx_id && (
-              <Button 
-                colorScheme="blue" 
-                onClick={handleGenerateFinalTx}
-                isLoading={loading}
-              >
-                Generate Final Transaction
-              </Button>
-            )}
-            
-            {selectedContract.status === 'ACTIVE' && selectedContract.final_tx_id && (
-              <Button 
-                colorScheme="green" 
-                onClick={handleSettleContract}
-                isLoading={loading}
-              >
-                Settle Contract
-              </Button>
-            )}
-          </HStack>
-        )}
-        
-        {/* Contract signing modal */}
+        {/* Contract Signing Modal */}
         <ContractSigningModal
-          isOpen={isSigningModalOpen}
-          onClose={onCloseSigningModal}
-          contract={selectedContract}
-          transaction={getSelectedTransaction()}
-          onSuccess={() => {
-            onCloseSigningModal();
-            if (id) {
-              dispatch(fetchContract(id));
-              dispatch(fetchContractTransactions(id));
-            }
-          }}
+          isOpen={isOpen}
+          onClose={onClose}
+          contract={contract}
+          transaction={selectedTransaction}
+          onSuccess={handleSigningSuccess}
         />
       </Container>
-    </MainLayout>
+    </Layout>
   );
 };
 
 export default ContractDetailsPage;
+

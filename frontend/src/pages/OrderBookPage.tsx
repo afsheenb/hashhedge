@@ -1,50 +1,38 @@
-import React, { useState } from 'react';
+
+import React, { useEffect, useState } from 'react';
 import {
-  Box,
   Container,
+  Box,
   Grid,
   GridItem,
+  Select,
+  Button,
+  HStack,
+  Text,
+  useDisclosure,
+  useToast,
+  Alert,
+  AlertIcon,
+  VStack,
 } from '@chakra-ui/react';
-import MainLayout from '../components/layout/MainLayout';
-import PageHeader from '../components/common/PageHeader';
+import { useAppDispatch, useAppSelector } from '../hooks/redux-hooks';
+import { getOrderBook, getRecentTrades } from '../store/order-slice';
+import { fetchCurrentHashRate } from '../store/hash-rate-slice';
+import Layout from '../components/layout/Layout';
 import OrderBookDisplay from '../components/orderbook/OrderBookDisplay';
-import TradeHistoryCard from '../components/orderbook/TradeHistoryCard';
-import HashRateStatsCard from '../components/hashrate/HashRateStatsCard';
-import { ContractType } from '../types';
+import PlaceOrderModal from '../components/orderbook/PlaceOrderModal';
+import RecentTradesTable from '../components/orderbook/RecentTradesTable';
+import LoadingSpinner from '../components/common/LoadingSpinner';
+import ErrorDisplay from '../components/common/ErrorDisplay';
+import PageHeader from '../components/common/PageHeader';
 
 const OrderBookPage: React.FC = () => {
-  const [selectedContractType, setSelectedContractType] = useState<ContractType>(ContractType.CALL);
-  const [selectedStrikeHashRate, setSelectedStrikeHashRate] = useState<number>(350);
-
-  return (
-    <MainLayout>
-      <Container maxW="container.xl" py={8}>
-        <PageHeader
-          title="Order Book"
-          description="View and place orders for Bitcoin hash rate derivatives"
-        />
-
-        <Grid
-          templateColumns={{ base: '1fr', lg: '1fr 320px' }}
-          gap={6}
-        >
-          <GridItem>
-            <OrderBookDisplay
-              contractType={selectedContractType}
-              strikeHashRate={selectedStrikeHashRate}
-            />
-          </GridItem>
-          <GridItem>
-            <VStack spacing={6}>
-              <HashRateStatsCard />
-              <TradeHistoryCard limit={10} />
-            </VStack>
-          </GridItem>
-        </Grid>
-      </Container>
-    </MainLayout>
-  );
-};
-
-export default OrderBookPage;
-
+  const dispatch = useAppDispatch();
+  const toast = useToast();
+  const { 
+    isOpen: isOrderModalOpen, 
+    onOpen: openOrderModal, 
+    onClose: closeOrderModal 
+  } = useDisclosure();
+  
+  const [contractType, setContractType] = useState<'CALL' | 'PUT'>('
