@@ -1,4 +1,4 @@
-// internal/orderbook/orderbook.go
+// interna/orderbook/orderbook.go
 package orderbook
 
 import (
@@ -14,6 +14,13 @@ import (
 	"hashhedge/internal/models"
 )
 
+type OrderKey struct {
+	ContractType     models.ContractType
+	StrikeHashRate   float64
+	StartBlockHeight int64
+	EndBlockHeight   int64
+}
+
 type OrderBook struct {
     orderRepo    *db.OrderRepository
     tradeRepo    *db.TradeRepository
@@ -21,10 +28,13 @@ type OrderBook struct {
     contractSvc  *contract.Service
     db           *db.DB
     mu           sync.RWMutex
+
+    // In-memory order books for fast matching
+    bids         map[OrderKey][]*models.Order // Buy orders
+    asks         map[OrderKey][]*models.Order // Sell orders
+    eventPublisher  chan<- models.TradeEvent
 }
 
-
-// NewOrderBook creates a new order book - update constructor
 func NewOrderBook(
     db *db.DB,
     orderRepo *db.OrderRepository,
@@ -38,6 +48,9 @@ func NewOrderBook(
         tradeRepo:    tradeRepo,
         contractRepo: contractRepo,
         contractSvc:  contractSvc,
+        bids:         make(map[OrderKey][]*models.Order),
+        asks:         make(map[OrderKey][]*models.Order),
+        mu:           sync.RWMutex{},
     }
 }
 
@@ -190,134 +203,6 @@ func (ob *OrderBook) GetOrderBook(
 	return orderBook, nil
 }
 
-// tryMatchOrder attempts to match a new order with existing orders
-func (ob *OrderBook) tryMatchOrder(ctx context.Context, order *models.Order) (bool, error) {
-	// Determine the opposite side of the order
-	oppositeSide := models.OrderSideSell
-	if order.Side == models.OrderSideSell {
-		oppositeSide = models.OrderSideBuy
-	}
-
-	// Get matching orders
-	matchingOrders, err := ob.orderRepo.ListOpenOrders(
-		ctx,
-		order.ContractType,
-		order.StrikeHashRate,
-		oppositeSide,
-		100, // Limit to 100 potential matches
-		0,
-	)
-	if err != nil {
-		return false, fmt.Errorf("failed to get matching orders: %w", err)
-	}
-
-	if len(matchingOrders) == 0 {
-		return false, nil // No matches found
-	}
-
-	// Check price compatibility
-	var compatibleOrders []*models.Order
-	for _, match := range matchingOrders {
-		if (order.Side == models.OrderSideBuy && order.Price >= match.Price) ||
-			(order.Side == models.OrderSideSell && order.Price <= match.Price) {
-			compatibleOrders = append(compatibleOrders, match)
-		}
-	}
-
-	if len(compatibleOrders) == 0 {
-		return false, nil // No compatible matches
-	}
-
-	// Execute trades
-	matched := false
-	err = ob.db.WithTransaction(ctx, func(tx *sqlx.Tx) error {
-		for _, match := range compatibleOrders {
-			// Break if the order is completely filled
-			if order.RemainingQuantity <= 0 {
-				break
-			}
-
-			// Determine trade quantity
-			tradeQty := order.RemainingQuantity
-			if match.RemainingQuantity < tradeQty {
-				tradeQty = match.RemainingQuantity
-			}
-
-			// Determine trade price (use the existing order's price)
-			tradePrice := match.Price
-
-			// Create a new contract for this trade
-			var buyerPubKey, sellerPubKey string
-			var buyOrderID, sellOrderID uuid.UUID
-
-			if order.Side == models.OrderSideBuy {
-				buyerPubKey = order.PubKey
-				sellerPubKey = match.PubKey
-				buyOrderID = order.ID
-				sellOrderID = match.ID
-			} else {
-				buyerPubKey = match.PubKey
-				sellerPubKey = order.PubKey
-				buyOrderID = match.ID
-				sellOrderID = order.ID
-			}
-
-			// Create the contract
-			contract, err := ob.contractSvc.CreateContract(
-				ctx,
-				order.ContractType,
-				order.StrikeHashRate,
-				order.StartBlockHeight,
-				order.EndBlockHeight,
-				time.Now().Add(14*24*time.Hour), // 14 days target time (example)
-				order.Price,                     // Contract size based on price
-				0,                               // No premium in this simple model
-				buyerPubKey,
-				sellerPubKey,
-			)
-			if err != nil {
-				return fmt.Errorf("failed to create contract for trade: %w", err)
-			}
-
-			// Create the trade record
-			trade := &models.Trade{
-				ID:          uuid.New(),
-				BuyOrderID:  buyOrderID,
-				SellOrderID: sellOrderID,
-				ContractID:  contract.ID,
-				Price:       tradePrice,
-				Quantity:    tradeQty,
-				ExecutedAt:  time.Now().UTC(),
-			}
-
-			err = ob.tradeRepo.Create(ctx, tx, trade)
-			if err != nil {
-				return fmt.Errorf("failed to create trade: %w", err)
-			}
-
-			// Update the remaining quantities
-			order.RemainingQuantity -= tradeQty
-			match.RemainingQuantity -= tradeQty
-
-			// Update the matching order
-			err = ob.orderRepo.DecrementRemainingQuantity(ctx, match.ID, tradeQty)
-			if err != nil {
-				return fmt.Errorf("failed to update matching order: %w", err)
-			}
-
-			matched = true
-		}
-
-		return nil
-	})
-
-	if err != nil {
-		return false, err
-	}
-
-	return matched, nil
-}
-
 // Start begins periodic tasks like cancelling expired orders
 func (ob *OrderBook) Start(ctx context.Context) {
 	go func() {
@@ -339,9 +224,11 @@ func (ob *OrderBook) Start(ctx context.Context) {
 	}()
 }
 
+// SetEventPublisher sets the channel for publishing trade events
+func (ob *OrderBook) SetEventPublisher(eventChan chan<- models.TradeEvent) {
+    ob.eventPublisher = eventChan
+}
 
-// internal/orderbook/orderbook.go
-// Enhanced implementation of match_buy_order and match_sell_order
 
 // matchBuyOrder matches a buy order against the order book
 func (ob *OrderBook) matchBuyOrder(ctx context.Context, buyOrder *models.Order) (bool, error) {
@@ -640,7 +527,7 @@ func (ob *OrderBook) executeTrade(
 	targetTimestamp := tradeTime.Add(estimatedTimeToTarget)
 
 	// Create a contract for this trade
-	contract, err := ob.contractService.CreateContract(
+	contract, err := ob.contractSvc.CreateContract(
 		ctx,
 		buyOrder.ContractType,
 		buyOrder.StrikeHashRate,
@@ -743,6 +630,44 @@ func (ob *OrderBook) publishTradeEvent(trade *models.Trade, contract *models.Con
 				Msg("Failed to publish trade event - channel full")
 		}
 	}
+}
+
+// tryMatchOrder attempts to match a new order with existing orders
+func (ob *OrderBook) tryMatchOrder(ctx context.Context, order *models.Order) (bool, error) {
+	// Add the order to the appropriate in-memory book first
+	key := OrderKey{
+		ContractType:     order.ContractType,
+		StrikeHashRate:   order.StrikeHashRate,
+		StartBlockHeight: order.StartBlockHeight,
+		EndBlockHeight:   order.EndBlockHeight,
+	}
+
+	// Add the order to the appropriate side of the order book
+	ob.mu.Lock()
+	if order.Side == models.OrderSideBuy {
+		// Add to bids
+		ob.bids[key] = append(ob.bids[key], order)
+	} else {
+		// Add to asks
+		ob.asks[key] = append(ob.asks[key], order)
+	}
+	ob.mu.Unlock()
+
+	// Try to match the order based on its side
+	var matched bool
+	var err error
+
+	if order.Side == models.OrderSideBuy {
+		matched, err = ob.matchBuyOrder(ctx, order)
+	} else {
+		matched, err = ob.matchSellOrder(ctx, order)
+	}
+
+	if err != nil {
+		return false, err
+	}
+
+	return matched, nil
 }
 
 // min returns the minimum of two integers

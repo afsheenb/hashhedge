@@ -239,3 +239,199 @@ export interface AppState {
   orders: OrderState;
   hashRate: HashRateState;
 }
+
+
+
+// To be added to your existing types.ts file
+
+// API Response
+export interface ApiResponse<T = any> {
+  success: boolean;
+  data?: T;
+  error?: string;
+}
+
+// Hash Rate Data
+export interface HashRateData {
+  hashRate: number;
+  timestamp: string;
+}
+
+export interface HashRateSummary {
+  current: number;
+  average_7d: number;
+  average_30d: number;
+  change_24h: number;
+  change_7d: number;
+  change_30d: number;
+}
+
+export interface Block {
+  hash: string;
+  height: number;
+  time: Date;
+  difficulty: number;
+  previousBlockHash: string;
+}
+
+// Order Types
+export interface Order {
+  id: string;
+  user_id: string;
+  side: OrderSide;
+  contract_type: ContractType;
+  strike_hash_rate: number;
+  start_block_height: number;
+  end_block_height: number;
+  price: number;
+  quantity: number;
+  remaining_quantity: number;
+  status: OrderStatus;
+  pub_key: string;
+  created_at: string;
+  updated_at: string;
+  expires_at?: string;
+}
+
+export type OrderSide = 'BUY' | 'SELL';
+export type OrderStatus = 'OPEN' | 'PARTIAL' | 'FILLED' | 'CANCELLED' | 'EXPIRED';
+
+export interface OrderBook {
+  buys: Order[];
+  sells: Order[];
+}
+
+export interface Trade {
+  id: string;
+  buy_order_id: string;
+  sell_order_id: string;
+  contract_id: string;
+  price: number;
+  quantity: number;
+  executed_at: string;
+}
+
+export interface TradeEvent {
+  id: string;
+  contractID: string;
+  contractType: ContractType;
+  strikeHashRate: number;
+  price: number;
+  quantity: number;
+  executedAt: string;
+}
+
+// Contract Types
+export interface Contract {
+  id: string;
+  contract_type: ContractType;
+  strike_hash_rate: number;
+  start_block_height: number;
+  end_block_height: number;
+  target_timestamp: string;
+  contract_size: number;
+  premium: number;
+  buyer_pub_key: string;
+  seller_pub_key: string;
+  status: ContractStatus;
+  created_at: string;
+  updated_at: string;
+  expires_at: string;
+  setup_tx_id?: string;
+  final_tx_id?: string;
+  settlement_tx_id?: string;
+}
+
+export type ContractType = 'CALL' | 'PUT';
+export type ContractStatus = 'CREATED' | 'ACTIVE' | 'SETTLED' | 'EXPIRED' | 'CANCELLED';
+
+export interface ContractTransaction {
+  id: string;
+  contract_id: string;
+  transaction_id: string;
+  tx_type: string;
+  tx_hex: string;
+  confirmed: boolean;
+  created_at: string;
+  confirmed_at?: string;
+}
+
+// Form Types
+export interface AuthForm {
+  username: string;
+  password: string;
+}
+
+export interface RegisterForm extends AuthForm {
+  email: string;
+  confirm_password: string;
+}
+
+export interface AddKeyForm {
+  pub_key: string;
+  key_type: string;
+  label: string;
+}
+
+export interface PlaceOrderForm {
+  user_id: string;
+  side: string;
+  contract_type: string;
+  strike_hash_rate: number;
+  start_block_height: number;
+  end_block_height: number;
+  price: number;
+  quantity: number;
+  pub_key: string;
+  expires_in?: number;
+}
+
+export interface CreateContractForm {
+  contract_type: string;
+  strike_hash_rate: number;
+  start_block_height: number;
+  end_block_height: number;
+  target_timestamp: string;
+  contract_size: number;
+  premium: number;
+  buyer_pub_key: string;
+  seller_pub_key: string;
+}
+
+export interface SetupContractForm {
+  buyer_inputs: string[];
+  seller_inputs: string[];
+}
+
+export interface SwapContractParticipantForm {
+  old_pub_key: string;
+  new_pub_key: string;
+}
+
+// User Types
+export interface User {
+  id: string;
+  username: string;
+  email: string;
+  created_at: string;
+  updated_at: string;
+  last_login_at?: string;
+}
+
+export interface UserKey {
+  id: string;
+  user_id: string;
+  pub_key: string;
+  key_type: string;
+  label: string;
+  created_at: string;
+}
+
+export interface UserStats {
+  total_contracts: number;
+  active_contracts: number;
+  total_orders: number;
+  open_orders: number;
+  contract_value: number;
+  win_rate: number;
+}

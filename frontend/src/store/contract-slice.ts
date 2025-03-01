@@ -200,6 +200,19 @@ const contractSlice = createSlice({
   },
   extraReducers: (builder) => {
     // Fetch active contracts
+    builder.addCase(broadcastTx.pending, (state) => {
+      state.loading = true;
+      state.error = null;
+    });
+    builder.addCase(broadcastTx.fulfilled, (state, action) => {
+      state.loading = false;
+      // Could update the transaction status if needed
+    });
+
+    builder.addCase(broadcastTx.rejected, (state, action) => {
+      state.loading = false;
+      state.error = action.payload as string;
+    });
     builder.addCase(fetchActiveContracts.pending, (state) => {
       state.loading = true;
       state.error = null;
@@ -720,6 +733,30 @@ const contractSlice = createSlice({
     });
   },
 });
+
+export const broadcastTx = createAsyncThunk<
+  { broadcast_tx_id: string },
+  BroadcastTxParams,
+  { rejectValue: string }
+>(
+  'contract/broadcastTx',
+  async (params, { rejectWithValue }) => {
+    try {
+      const response = await contractService.broadcastTx(
+        params.contractId,
+        params.txId
+      );
+
+      if (!response.success) {
+        return rejectWithValue(response.error || 'Failed to broadcast transaction');
+      }
+
+      return response.data;
+    } catch (error) {
+      return rejectWithValue(error instanceof Error ? error.message : 'Unknown error');
+    }
+  }
+);
 
 export const { setSelectedContract, clearContractError } = contractSlice.actions;
 export default contractSlice.reducer;

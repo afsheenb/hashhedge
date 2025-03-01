@@ -1,240 +1,298 @@
-import React, { useState, useEffect } from 'react';
+import React, { useMemo } from 'react';
 import {
   Box,
   Flex,
-  Heading,
   Text,
   Divider,
-  HStack,
-  Select,
-  NumberInput,
-  NumberInputField,
-  NumberInputStepper,
-  NumberIncrementStepper,
-  NumberDecrementStepper,
-  Button,
-  useDisclosure,
-  Modal,
-  ModalOverlay,
-  ModalContent,
-  ModalHeader,
-  ModalCloseButton,
-  ModalBody,
-  ModalFooter,
   useColorMode,
-  Stack,
+  Table,
+  Thead,
+  Tbody,
+  Tr,
+  Th,
+  Td,
+  VStack,
+  Heading,
+  HStack,
+  Badge,
 } from '@chakra-ui/react';
-import { OrderBook, OrderSide, ContractType } from '../../types';
-import OrderTable from './OrderTable';
-import PlaceOrderForm from './PlaceOrderForm';
-import { useAppDispatch, useAppSelector } from '../../hooks/redux-hooks';
-import { fetchOrderBook } from '../../store/order-slice';
-import LoadingSpinner from '../common/LoadingSpinner';
-import ErrorDisplay from '../common/ErrorDisplay';
+import { Order, OrderBook } from '../../types';
 
 interface OrderBookDisplayProps {
-  contractType?: ContractType;
-  strikeHashRate?: number;
+  orderBook: OrderBook;
+  contractType: 'CALL' | 'PUT';
+  strikeHashRate: number;
 }
 
 const OrderBookDisplay: React.FC<OrderBookDisplayProps> = ({
-  contractType: initialContractType = ContractType.CALL,
-  strikeHashRate: initialStrikeHashRate = 350,
+  orderBook,
+  contractType,
+  strikeHashRate,
 }) => {
   const { colorMode } = useColorMode();
-  const dispatch = useAppDispatch();
-  const { orderBook, loading, error } = useAppSelector((state) => state.orders);
-  const { isAuthenticated } = useAppSelector((state) => state.auth);
+  const buyOrders = orderBook.buys || [];
+  const sellOrders = orderBook.sells || [];
 
-  const [contractType, setContractType] = useState<ContractType>(initialContractType);
-  const [strikeHashRate, setStrikeHashRate] = useState<number>(initialStrikeHashRate);
+  // Calculate total order volumes at each price level
+  const aggregatedBuys = useMemo(() => {
+    const grouped: Record<number, { total: number; orders: number }> = {};
+    
+    buyOrders.forEach(order => {
+      if (!grouped[order.price]) {
+        grouped[order.price] = { total: 0, orders: 0 };
+      }
+      grouped[order.price].total += order.remaining_quantity;
+      grouped[order.price].orders += 1;
+    });
+    
+    // Convert to array and sort by price (descending for buys)
+    return Object.entries(grouped)
+      .map(([price, data]) => ({
+        price: parseInt(price),
+        total: data.total,
+        orders: data.orders,
+      }))
+      .sort((a, b) => b.price - a.price);
+  }, [buyOrders]);
 
-  const {
-    isOpen: isPlaceOrderModalOpen,
-    onOpen: onOpenPlaceOrderModal,
-    onClose: onClosePlaceOrderModal,
-  } = useDisclosure();
+  const aggregatedSells = useMemo(() => {
+    const grouped: Record<number, { total: number; orders: number }> = {};
+    
+    sellOrders.forEach(order => {
+      if (!grouped[order.price]) {
+        grouped[order.price] = { total: 0, orders: 0 };
+      }
+      grouped[order.price].total += order.remaining_quantity;
+      grouped[order.price].orders += 1;
+    });
+    
+    // Convert to array and sort by price (ascending for sells)
+    return Object.entries(grouped)
+      .map(([price, data]) => ({
+        price: parseInt(price),
+        total: data.total,
+        orders: data.orders,
+      }))
+      .sort((a, b) => a.price - b.price);
+  }, [sellOrders]);
 
-  useEffect(() => {
-    const fetchData = () => {
-      dispatch(fetchOrderBook({
-        contractType: contractType.toLowerCase(),
-        strikeHashRate: strikeHashRate,
-      }));
-    };
+  // Calculate spread
+  const lowestAsk = aggregatedSells[0]?.price;
+  const highestBid = aggregatedBuys[0]?.price;
+  const spread = lowestAsk && highestBid ? lowestAsk - highestBid : null;
+  const spreadPercentage = lowestAsk && highestBid ? ((lowestAsk - highestBid) / lowestAsk) * 100 : null;
 
-    fetchData();
+  // Find the max volume for visualization
+  const maxBuyVolume = Math.max(...aggregatedBuys.map(o => o.total), 0);
+  const maxSellVolume = Math.max(...aggregatedSells.map(o => o.total), 0);
+  const maxVolume = Math.max(maxBuyVolume, maxSellVolume, 1);
 
-    // Set up polling for real-time updates
-    const intervalId = setInterval(fetchData, 10000); // Fetch every 10 seconds
-
-    return () => clearInterval(intervalId);
-  }, [dispatch, contractType, strikeHashRate]);
-
-  const handleContractTypeChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
-    setContractType(e.target.value as ContractType);
+  const formatSats = (sats: number) => {
+    return sats >= 100000 
+      ? `${(sats / 100000).toFixed(2)}K`
+      : sats.toString();
   };
-
-  const handleStrikeHashRateChange = (valueString: string) => {
-    setStrikeHashRate(parseFloat(valueString));
-  };
-
-  const handleRefresh = () => {
-    dispatch(fetchOrderBook({
-      contractType: contractType.toLowerCase(),
-      strikeHashRate: strikeHashRate,
-    }));
-  };
-
-  if (loading && !orderBook) {
-    return <LoadingSpinner message="Loading order book..." />;
-  }
-
-  if (error) {
-    return <ErrorDisplay message={error} onRetry={handleRefresh} />;
-  }
 
   return (
     <Box>
-      <Flex 
-        justifyContent="space-between" 
-        alignItems="center" 
-        mb={6}
-        flexDirection={{ base: 'column', md: 'row' }}
-        gap={4}
-      >
-        <Heading as="h2" size="xl">
-          {contractType} Hash Rate Order Book
-        </Heading>
-
-        <HStack spacing={4}>
-          <Select
-            value={contractType}
-            onChange={handleContractTypeChange}
-            width="auto"
-          >
-            <option value={ContractType.CALL}>CALL</option>
-            <option value={ContractType.PUT}>PUT</option>
-          </Select>
-
-          <Flex alignItems="center">
-            <Text mr={2} whiteSpace="nowrap">Strike: </Text>
-            <NumberInput
-              value={strikeHashRate}
-              onChange={handleStrikeHashRateChange}
-              min={1}
-              step={5}
-              precision={2}
-              width="120px"
-            >
-              <NumberInputField />
-              <NumberInputStepper>
-                <NumberIncrementStepper />
-                <NumberDecrementStepper />
-              </NumberInputStepper>
-            </NumberInput>
-            <Text ml={2}>EH/s</Text>
-          </Flex>
-
-          <Button onClick={handleRefresh} size="sm">
-            Refresh
-          </Button>
+      <Flex justifyContent="space-between" alignItems="center" mb={4}>
+        <HStack>
+          <Heading size="md">Order Book</Heading>
+          <Badge colorScheme={contractType === 'CALL' ? 'teal' : 'purple'}>
+            {contractType}
+          </Badge>
+          <Text>
+            {strikeHashRate.toFixed(2)} EH/s
+          </Text>
         </HStack>
+        
+        {spread !== null && (
+          <HStack>
+            <Text fontWeight="medium">Spread:</Text>
+            <Text>{formatSats(spread)} sats ({spreadPercentage?.toFixed(2)}%)</Text>
+          </HStack>
+        )}
       </Flex>
 
-      <Flex
-        justifyContent="center"
-        alignItems="stretch"
-        gap={8}
-        flexDirection={{ base: 'column', lg: 'row' }}
-      >
-        <Box
-          flex="1"
-          borderWidth="1px"
-          borderRadius="lg"
-          overflow="hidden"
-          boxShadow="sm"
-          bg={colorMode === 'light' ? 'white' : 'gray.800'}
-        >
-          <Box bg="green.50" px={4} py={3}>
-            <Heading size="md" color="green.700">
-              Buy Orders (Bids)
-            </Heading>
-          </Box>
-          <Box maxHeight="400px" overflowY="auto">
-            <OrderTable
-              orders={orderBook?.buys || []}
-              side={OrderSide.BUY}
-              emptyMessage="No buy orders"
-              maxHeight="400px"
-            />
-          </Box>
+      <Flex justifyContent="space-between">
+        {/* Sells (Asks) Table */}
+        <Box width="48%">
+          <Text fontWeight="bold" mb={2} color="red.500">
+            Sell Orders
+          </Text>
+          <Table size="sm" variant="simple">
+            <Thead>
+              <Tr>
+                <Th>Price (sats)</Th>
+                <Th isNumeric>Quantity</Th>
+                <Th isNumeric>Total</Th>
+              </Tr>
+            </Thead>
+            <Tbody>
+              {aggregatedSells.length === 0 ? (
+                <Tr>
+                  <Td colSpan={3} textAlign="center">No sell orders</Td>
+                </Tr>
+              ) : (
+                aggregatedSells.map((order, index) => (
+                  <Tr key={`sell-${order.price}-${index}`}>
+                    <Td color="red.500" fontWeight="medium">
+                      {order.price.toLocaleString()}
+                    </Td>
+                    <Td isNumeric>{order.total}</Td>
+                    <Td isNumeric position="relative">
+                      {order.orders}
+                      <Box
+                        position="absolute"
+                        right="0"
+                        top="0"
+                        bottom="0"
+                        width={`${(order.total / maxVolume) * 100}%`}
+                        bg="red.100"
+                        opacity="0.5"
+                        zIndex="-1"
+                      />
+                    </Td>
+                  </Tr>
+                ))
+              )}
+            </Tbody>
+          </Table>
         </Box>
 
-        <Box
-          flex="1"
-          borderWidth="1px"
-          borderRadius="lg"
-          overflow="hidden"
-          boxShadow="sm"
-          bg={colorMode === 'light' ? 'white' : 'gray.800'}
-        >
-          <Box bg="red.50" px={4} py={3}>
-            <Heading size="md" color="red.700">
-              Sell Orders (Asks)
-            </Heading>
-          </Box>
-          <Box maxHeight="400px" overflowY="auto">
-            <OrderTable
-              orders={orderBook?.sells || []}
-              side={OrderSide.SELL}
-              emptyMessage="No sell orders"
-              maxHeight="400px"
-            />
-          </Box>
+        {/* Buys (Bids) Table */}
+        <Box width="48%">
+          <Text fontWeight="bold" mb={2} color="green.500">
+            Buy Orders
+          </Text>
+          <Table size="sm" variant="simple">
+            <Thead>
+              <Tr>
+                <Th>Price (sats)</Th>
+                <Th isNumeric>Quantity</Th>
+                <Th isNumeric>Total</Th>
+              </Tr>
+            </Thead>
+            <Tbody>
+              {aggregatedBuys.length === 0 ? (
+                <Tr>
+                  <Td colSpan={3} textAlign="center">No buy orders</Td>
+                </Tr>
+              ) : (
+                aggregatedBuys.map((order, index) => (
+                  <Tr key={`buy-${order.price}-${index}`}>
+                    <Td color="green.500" fontWeight="medium">
+                      {order.price.toLocaleString()}
+                    </Td>
+                    <Td isNumeric>{order.total}</Td>
+                    <Td isNumeric position="relative">
+                      {order.orders}
+                      <Box
+                        position="absolute"
+                        left="0"
+                        top="0"
+                        bottom="0"
+                        width={`${(order.total / maxVolume) * 100}%`}
+                        bg="green.100"
+                        opacity="0.5"
+                        zIndex="-1"
+                      />
+                    </Td>
+                  </Tr>
+                ))
+              )}
+            </Tbody>
+          </Table>
         </Box>
       </Flex>
 
-      {isAuthenticated && (
-        <Flex justifyContent="center" mt={8}>
-          <Button
-            colorScheme="blue"
-            size="lg"
-            onClick={onOpenPlaceOrderModal}
-          >
-            Place New Order
-          </Button>
+      {/* Market Depth */}
+      <Box mt={6}>
+        <Text fontWeight="bold" mb={2}>
+          Market Depth
+        </Text>
+        <Box
+          height="100px"
+          position="relative"
+          borderWidth="1px"
+          borderRadius="md"
+          p={2}
+        >
+          {/* Center line (current price) */}
+          <Box
+            position="absolute"
+            left="50%"
+            top="0"
+            bottom="0"
+            width="1px"
+            bg={colorMode === 'light' ? 'gray.300' : 'gray.600'}
+          />
+
+          {/* Buy side depth */}
+          {aggregatedBuys.map((order, index) => {
+            const position = 50 - ((highestBid - order.price) / (highestBid || 1)) * 25;
+            return (
+              <Box
+                key={`depth-buy-${index}`}
+                position="absolute"
+                left={`${Math.max(0, position)}%`}
+                bottom="0"
+                height={`${(order.total / maxVolume) * 80}%`}
+                width="1%"
+                bg="green.400"
+                opacity="0.7"
+              />
+            );
+          })}
+
+          {/* Sell side depth */}
+          {aggregatedSells.map((order, index) => {
+            const position = 50 + ((order.price - lowestAsk) / (lowestAsk || 1)) * 25;
+            return (
+              <Box
+                key={`depth-sell-${index}`}
+                position="absolute"
+                left={`${Math.min(100, position)}%`}
+                bottom="0"
+                height={`${(order.total / maxVolume) * 80}%`}
+                width="1%"
+                bg="red.400"
+                opacity="0.7"
+              />
+            );
+          })}
+        </Box>
+        <Flex justifyContent="space-between" mt={1}>
+          <Text fontSize="sm">Lower price</Text>
+          <Text fontSize="sm">Higher price</Text>
         </Flex>
-      )}
+      </Box>
 
-      {/* Place Order Modal */}
-      <Modal
-        isOpen={isPlaceOrderModalOpen}
-        onClose={onClosePlaceOrderModal}
-        size="xl"
-        scrollBehavior="inside"
-      >
-        <ModalOverlay />
-        <ModalContent>
-          <ModalHeader>Place New Order</ModalHeader>
-          <ModalCloseButton />
-          <ModalBody>
-            <PlaceOrderForm
-              initialContractType={contractType}
-              initialStrikeHashRate={strikeHashRate}
-              onSuccess={onClosePlaceOrderModal}
-            />
-          </ModalBody>
-          <ModalFooter>
-            <Button variant="ghost" onClick={onClosePlaceOrderModal}>
-              Cancel
-            </Button>
-          </ModalFooter>
-        </ModalContent>
-      </Modal>
+      <Box mt={6}>
+        <Text fontWeight="bold" mb={2}>
+          Order Book Summary
+        </Text>
+        <HStack spacing={8} mt={2}>
+          <VStack align="start" spacing={1}>
+            <Text fontSize="sm" color="gray.500">Total Buy Orders:</Text>
+            <Text fontWeight="bold">{buyOrders.length}</Text>
+          </VStack>
+          <VStack align="start" spacing={1}>
+            <Text fontSize="sm" color="gray.500">Total Sell Orders:</Text>
+            <Text fontWeight="bold">{sellOrders.length}</Text>
+          </VStack>
+          <VStack align="start" spacing={1}>
+            <Text fontSize="sm" color="gray.500">Total Buy Volume:</Text>
+            <Text fontWeight="bold">{buyOrders.reduce((sum, order) => sum + order.remaining_quantity, 0)}</Text>
+          </VStack>
+          <VStack align="start" spacing={1}>
+            <Text fontSize="sm" color="gray.500">Total Sell Volume:</Text>
+            <Text fontWeight="bold">{sellOrders.reduce((sum, order) => sum + order.remaining_quantity, 0)}</Text>
+          </VStack>
+        </HStack>
+      </Box>
     </Box>
   );
 };
 
 export default OrderBookDisplay;
-

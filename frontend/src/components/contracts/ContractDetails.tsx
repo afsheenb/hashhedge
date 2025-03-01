@@ -22,14 +22,14 @@ import {
   ModalFooter,
 } from '@chakra-ui/react';
 import { format } from 'date-fns';
-import { Contract, ContractStatus, ContractType } from '../../types';
+import { Contract, ContractStatus, ContractType, ContractTransaction } from '../../types';
 import { useAppDispatch } from '../../hooks/redux-hooks';
 import { cancelContract, settleContract, generateFinalTx } from '../../store/contract-slice';
 import ContractTransactionsList from './ContractTransactionsList';
 
 interface ContractDetailsProps {
   contract: Contract;
-  transactions: any[];
+  transactions: ContractTransaction[];
   showTransactions?: boolean;
 }
 
@@ -142,716 +142,125 @@ const ContractDetails: React.FC<ContractDetailsProps> = ({
 
   return (
     <Box>
-      <Flex justifyContent="space-between" alignItems="center" mb
-import React from 'react';
-import {
-  Box,
-  Badge,
-  Text,
-  Button,
-  HStack,
-  VStack,
-  Flex,
-  Divider,
-  Tooltip,
-  IconButton,
-  useColorMode,
-  useToast,
-} from '@chakra-ui/react';
-import { InfoIcon, SettingsIcon, CalendarIcon, TimeIcon } from '@chakra-ui/icons';
-import { format } from 'date-fns';
-import { useNavigate } from 'react-router-dom';
-import { Contract, ContractStatus, ContractType } from '../../types';
-import { useAppDispatch } from '../../hooks/redux-hooks';
-import { cancelContract } from '../../store/contract-slice';
-
-interface ContractCardProps {
-  contract: Contract;
-}
-
-const ContractCard: React.FC<ContractCardProps> = ({ contract }) => {
-  const { colorMode } = useColorMode();
-  const navigate = useNavigate();
-  const dispatch = useAppDispatch();
-  const toast = useToast();
-
-  const getStatusColor = (status: ContractStatus) => {
-    switch (status) {
-      case 'CREATED':
-        return 'yellow';
-      case 'ACTIVE':
-        return 'green';
-      case 'SETTLED':
-        return 'blue';
-      case 'EXPIRED':
-        return 'orange';
-      case 'CANCELLED':
-        return 'red';
-      default:
-        return 'gray';
-    }
-  };
-
-  const getTypeColor = (type: ContractType) => {
-    return type === 'CALL' ? 'teal' : 'purple';
-  };
-
-  const handleViewDetails = () => {
-    navigate(`/contracts/${contract.id}`);
-  };
-
-  const handleCancelContract = async () => {
-    try {
-      await dispatch(cancelContract(contract.id)).unwrap();
-      toast({
-        title: 'Contract cancelled',
-        description: 'The contract has been cancelled successfully',
-        status: 'success',
-        duration: 3000,
-        isClosable: true,
-      });
-    } catch (error) {
-      toast({
-        title: 'Error',
-        description: error as string || 'Failed to cancel contract',
-        status: 'error',
-        duration: 5000,
-        isClosable: true,
-      });
-    }
-  };
-
-  const formatSats = (sats: number) => {
-    if (sats >= 100000000) {
-      return `${(sats / 100000000).toFixed(2)} BTC`;
-    } else {
-      return `${sats.toLocaleString()} sats`;
-    }
-  };
-
-  return (
-    <Box
-      borderWidth="1px"
-      borderRadius="lg"
-      overflow="hidden"
-      boxShadow="sm"
-      bg={colorMode === 'light' ? 'white' : 'gray.800'}
-      p={4}
-      transition="transform 0.2s"
-      _hover={{ transform: 'translateY(-2px)', boxShadow: 'md' }}
-    >
-      <Flex justifyContent="space-between" alignItems="flex-start" mb={2}>
+      <Flex justifyContent="space-between" alignItems="center" mb={4}>
+        <Heading as="h2" size="lg">
+          Contract Details
+        </Heading>
         <HStack>
-          <Badge colorScheme={getTypeColor(contract.contract_type)} fontSize="sm">
+          <Badge colorScheme={getTypeColor(contract.contract_type)} fontSize="md" px={2} py={1}>
             {contract.contract_type}
           </Badge>
-          <Badge colorScheme={getStatusColor(contract.status)} fontSize="sm">
+          <Badge colorScheme={getStatusColor(contract.status)} fontSize="md" px={2} py={1}>
             {contract.status}
           </Badge>
         </HStack>
-        <Tooltip label="View contract details">
-          <IconButton
-            aria-label="View contract details"
-            icon={<InfoIcon />}
-            size="sm"
-            variant="ghost"
-            onClick={handleViewDetails}
-          />
-        </Tooltip>
       </Flex>
 
-      <VStack align="stretch" spacing={2} mb={3}>
-        <Flex justifyContent="space-between">
-          <Text fontWeight="medium" color="gray.500" fontSize="sm">
-            Strike Hash Rate:
-          </Text>
-          <Text fontWeight="bold">{contract.strike_hash_rate.toFixed(2)} EH/s</Text>
-        </Flex>
-        <Flex justifyContent="space-between">
-          <Text fontWeight="medium" color="gray.500" fontSize="sm">
-            Contract Size:
-          </Text>
-          <Text fontWeight="bold">{formatSats(contract.contract_size)}</Text>
-        </Flex>
-        <Flex justifyContent="space-between">
-          <Text fontWeight="medium" color="gray.500" fontSize="sm">
-            Premium:
-          </Text>
-          <Text fontWeight="bold">{formatSats(contract.premium)}</Text>
-        </Flex>
-      </VStack>
+      <Grid templateColumns={{ base: "1fr", md: "1fr 1fr" }} gap={6} mb={6}>
+        <GridItem>
+          <VStack align="stretch" spacing={4} p={5} borderWidth="1px" borderRadius="lg">
+            <Heading size="md" mb={2}>Contract Terms</Heading>
+            
+            <Grid templateColumns="1fr 1fr" gap={4}>
+              <Text fontWeight="bold">Strike Hash Rate:</Text>
+              <Text>{contract.strike_hash_rate.toFixed(2)} EH/s</Text>
+              
+              <Text fontWeight="bold">Contract Size:</Text>
+              <Text>{formatSats(contract.contract_size)}</Text>
+              
+              <Text fontWeight="bold">Premium:</Text>
+              <Text>{formatSats(contract.premium)}</Text>
+              
+              <Text fontWeight="bold">Start Block:</Text>
+              <Text>{contract.start_block_height}</Text>
+              
+              <Text fontWeight="bold">End Block:</Text>
+              <Text>{contract.end_block_height}</Text>
+              
+              <Text fontWeight="bold">Target Time:</Text>
+              <Text>{format(new Date(contract.target_timestamp), 'PPP p')}</Text>
+              
+              <Text fontWeight="bold">Created:</Text>
+              <Text>{format(new Date(contract.created_at), 'PPP p')}</Text>
+              
+              <Text fontWeight="bold">Expires:</Text>
+              <Text>{format(new Date(contract.expires_at), 'PPP p')}</Text>
+            </Grid>
+          </VStack>
+        </GridItem>
+        
+        <GridItem>
+          <VStack align="stretch" spacing={4} p={5} borderWidth="1px" borderRadius="lg">
+            <Heading size="md" mb={2}>Participants</Heading>
+            
+            <Box p={3} borderWidth="1px" borderRadius="md" bg="gray.50">
+              <Text fontWeight="bold" fontSize="sm">Buyer Public Key</Text>
+              <Text fontSize="xs" overflowWrap="break-word">{contract.buyer_pub_key}</Text>
+            </Box>
+            
+            <Box p={3} borderWidth="1px" borderRadius="md" bg="gray.50">
+              <Text fontWeight="bold" fontSize="sm">Seller Public Key</Text>
+              <Text fontSize="xs" overflowWrap="break-word">{contract.seller_pub_key}</Text>
+            </Box>
+            
+            <Divider />
+            
+            <Heading size="sm">Actions</Heading>
+            
+            <HStack spacing={4}>
+              {contract.status === 'CREATED' && (
+                <Button colorScheme="red" onClick={handleCancelContract}>
+                  Cancel Contract
+                </Button>
+              )}
+              
+              {contract.status === 'ACTIVE' && !contract.final_tx_id && (
+                <Button colorScheme="blue" onClick={handleGenerateFinalTx}>
+                  Generate Final Transaction
+                </Button>
+              )}
+              
+              {contract.status === 'ACTIVE' && (
+                <Button colorScheme="green" onClick={onOpenSettleModal}>
+                  Settle Contract
+                </Button>
+              )}
+            </HStack>
+          </VStack>
+        </GridItem>
+      </Grid>
 
-      <Divider my={3} />
+      {showTransactions && transactions.length > 0 && (
+        <Box mt={8}>
+          <Heading size="md" mb={4}>Contract Transactions</Heading>
+          <ContractTransactionsList transactions={transactions} />
+        </Box>
+      )}
 
-      <VStack align="stretch" spacing={2} mb={4}>
-        <HStack color="gray.500" fontSize="xs">
-          <CalendarIcon />
-          <Text>
-            Start Block: {contract.start_block_height}
-          </Text>
-        </HStack>
-        <HStack color="gray.500" fontSize="xs">
-          <CalendarIcon />
-          <Text>
-            End Block: {contract.end_block_height}
-          </Text>
-        </HStack>
-        <HStack color="gray.500" fontSize="xs">
-          <TimeIcon />
-          <Text>
-            Target: {format(new Date(contract.target_timestamp), 'PPP p')}
-          </Text>
-        </HStack>
-      </VStack>
-
-      <HStack spacing={2} mt={2}>
-        <Button 
-          size="sm" 
-          width="full" 
-          onClick={handleViewDetails}
-          colorScheme="blue"
-          variant="outline"
-        >
-          Details
-        </Button>
-        {contract.status === 'CREATED' && (
-          <Button
-            size="sm"
-            width="full"
-            onClick={handleCancelContract}
-            colorScheme="red"
-            variant="outline"
-          >
-            Cancel
-          </Button>
-        )}
-      </HStack>
+      {/* Settlement confirmation modal */}
+      <Modal isOpen={isSettleModalOpen} onClose={onCloseSettleModal}>
+        <ModalOverlay />
+        <ModalContent>
+          <ModalHeader>Settle Contract</ModalHeader>
+          <ModalCloseButton />
+          <ModalBody>
+            <Text>
+              Are you sure you want to settle this contract? This action will execute the final
+              transaction and determine the winner based on the current hash rate.
+            </Text>
+          </ModalBody>
+          <ModalFooter>
+            <Button variant="ghost" mr={3} onClick={onCloseSettleModal}>
+              Cancel
+            </Button>
+            <Button colorScheme="blue" onClick={handleSettleContract}>
+              Confirm Settlement
+            </Button>
+          </ModalFooter>
+        </ModalContent>
+      </Modal>
     </Box>
   );
 };
 
-export default ContractCard;
-
-import React from 'react';
-import {
-  Box,
-  Badge,
-  Text,
-  Button,
-  HStack,
-  VStack,
-  Grid,
-  GridItem,
-  Divider,
-  Heading,
-  Flex,
-  useToast,
-  useDisclosure,
-  Modal,
-  ModalOverlay,
-  ModalContent,
-  ModalHeader,
-  ModalBody,
-  ModalCloseButton,
-  ModalFooter,
-} from '@chakra-ui/react';
-import { format } from 'date-fns';
-import { Contract, ContractStatus, ContractType } from '../../types';
-import { useAppDispatch } from '../../hooks/redux-hooks';
-import { cancelContract, settleContract, generateFinalTx } from '../../store/contract-slice';
-import ContractTransactionsList from './ContractTransactionsList';
-
-interface ContractDetailsProps {
-  contract: Contract;
-  transactions: any[];
-  showTransactions?: boolean;
-}
-
-const ContractDetails: React.FC<ContractDetailsProps> = ({
-  contract,
-  transactions,
-  showTransactions = true,
-}) => {
-  const dispatch = useAppDispatch();
-  const toast = useToast();
-  
-  const {
-    isOpen: isSettleModalOpen,
-    onOpen: onOpenSettleModal,
-    onClose: onCloseSettleModal,
-  } = useDisclosure();
-
-  const getStatusColor = (status: ContractStatus) => {
-    switch (status) {
-      case 'CREATED':
-        return 'yellow';
-      case 'ACTIVE':
-        return 'green';
-      case 'SETTLED':
-        return 'blue';
-      case 'EXPIRED':
-        return 'orange';
-      case 'CANCELLED':
-        return 'red';
-      default:
-        return 'gray';
-    }
-  };
-
-  const getTypeColor = (type: ContractType) => {
-    return type === 'CALL' ? 'teal' : 'purple';
-  };
-
-  const handleCancelContract = async () => {
-    try {
-      await dispatch(cancelContract(contract.id)).unwrap();
-      toast({
-        title: 'Contract cancelled',
-        description: 'The contract has been cancelled successfully',
-        status: 'success',
-        duration: 3000,
-        isClosable: true,
-      });
-    } catch (error) {
-      toast({
-        title: 'Error',
-        description: error as string,
-        status: 'error',
-        duration: 5000,
-        isClosable: true,
-      });
-    }
-  };
-
-  const handleGenerateFinalTx = async () => {
-    try {
-      await dispatch(generateFinalTx(contract.id)).unwrap();
-      toast({
-        title: 'Final transaction generated',
-        description: 'The final transaction has been generated successfully',
-        status: 'success',
-        duration: 3000,
-        isClosable: true,
-      });
-    } catch (error) {
-      toast({
-        title: 'Error',
-        description: error as string,
-        status: 'error',
-        duration: 5000,
-        isClosable: true,
-      });
-    }
-  };
-
-  const handleSettleContract = async () => {
-    try {
-      await dispatch(settleContract(contract.id)).unwrap();
-      toast({
-        title: 'Contract settled',
-        description: 'The contract has been settled successfully',
-        status: 'success',
-        duration: 3000,
-        isClosable: true,
-      });
-      onCloseSettleModal();
-    } catch (error) {
-      toast({
-        title: 'Error',
-        description: error as string,
-        status: 'error',
-        duration: 5000,
-        isClosable: true,
-      });
-    }
-  };
-
-  const formatSats = (sats: number) => {
-    if (sats >= 100000000) {
-      return `${(sats / 100000000).toFixed(8)} BTC`;
-    } else {
-      return `${sats.toLocaleString()} sats`;
-    }
-  };
-
-  return (
-    <Box>
-      <Flex justifyContent="space-between" alignItems="center" mb
-import React from 'react';
-import {
-  Box,
-  Badge,
-  Text,
-  Button,
-  HStack,
-  VStack,
-  Flex,
-  Divider,
-  Tooltip,
-  IconButton,
-  useColorMode,
-  useToast,
-} from '@chakra-ui/react';
-import { InfoIcon, SettingsIcon, CalendarIcon, TimeIcon } from '@chakra-ui/icons';
-import { format } from 'date-fns';
-import { useNavigate } from 'react-router-dom';
-import { Contract, ContractStatus, ContractType } from '../../types';
-import { useAppDispatch } from '../../hooks/redux-hooks';
-import { cancelContract } from '../../store/contract-slice';
-
-interface ContractCardProps {
-  contract: Contract;
-}
-
-const ContractCard: React.FC<ContractCardProps> = ({ contract }) => {
-  const { colorMode } = useColorMode();
-  const navigate = useNavigate();
-  const dispatch = useAppDispatch();
-  const toast = useToast();
-
-  const getStatusColor = (status: ContractStatus) => {
-    switch (status) {
-      case 'CREATED':
-        return 'yellow';
-      case 'ACTIVE':
-        return 'green';
-      case 'SETTLED':
-        return 'blue';
-      case 'EXPIRED':
-        return 'orange';
-      case 'CANCELLED':
-        return 'red';
-      default:
-        return 'gray';
-    }
-  };
-
-  const getTypeColor = (type: ContractType) => {
-    return type === 'CALL' ? 'teal' : 'purple';
-  };
-
-  const handleViewDetails = () => {
-    navigate(`/contracts/${contract.id}`);
-  };
-
-  const handleCancelContract = async () => {
-    try {
-      await dispatch(cancelContract(contract.id)).unwrap();
-      toast({
-        title: 'Contract cancelled',
-        description: 'The contract has been cancelled successfully',
-        status: 'success',
-        duration: 3000,
-        isClosable: true,
-      });
-    } catch (error) {
-      toast({
-        title: 'Error',
-        description: error as string || 'Failed to cancel contract',
-        status: 'error',
-        duration: 5000,
-        isClosable: true,
-      });
-    }
-  };
-
-  const formatSats = (sats: number) => {
-    if (sats >= 100000000) {
-      return `${(sats / 100000000).toFixed(2)} BTC`;
-    } else {
-      return `${sats.toLocaleString()} sats`;
-    }
-  };
-
-  return (
-    <Box
-      borderWidth="1px"
-      borderRadius="lg"
-      overflow="hidden"
-      boxShadow="sm"
-      bg={colorMode === 'light' ? 'white' : 'gray.800'}
-      p={4}
-      transition="transform 0.2s"
-      _hover={{ transform: 'translateY(-2px)', boxShadow: 'md' }}
-    >
-      <Flex justifyContent="space-between" alignItems="flex-start" mb={2}>
-        <HStack>
-          <Badge colorScheme={getTypeColor(contract.contract_type)} fontSize="sm">
-            {contract.contract_type}
-          </Badge>
-          <Badge colorScheme={getStatusColor(contract.status)} fontSize="sm">
-            {contract.status}
-          </Badge>
-        </HStack>
-        <Tooltip label="View contract details">
-          <IconButton
-            aria-label="View contract details"
-            icon={<InfoIcon />}
-            size="sm"
-            variant="ghost"
-            onClick={handleViewDetails}
-          />
-        </Tooltip>
-      </Flex>
-
-      <VStack align="stretch" spacing={2} mb={3}>
-        <Flex justifyContent="space-between">
-          <Text fontWeight="medium" color="gray.500" fontSize="sm">
-            Strike Hash Rate:
-          </Text>
-          <Text fontWeight="bold">{contract.strike_hash_rate.toFixed(2)} EH/s</Text>
-        </Flex>
-        <Flex justifyContent="space-between">
-          <Text fontWeight="medium" color="gray.500" fontSize="sm">
-            Contract Size:
-          </Text>
-          <Text fontWeight="bold">{formatSats(contract.contract_size)}</Text>
-        </Flex>
-        <Flex justifyContent="space-between">
-          <Text fontWeight="medium" color="gray.500" fontSize="sm">
-            Premium:
-          </Text>
-          <Text fontWeight="bold">{formatSats(contract.premium)}</Text>
-        </Flex>
-      </VStack>
-
-      <Divider my={3} />
-
-      <VStack align="stretch" spacing={2} mb={4}>
-        <HStack color="gray.500" fontSize="xs">
-          <CalendarIcon />
-          <Text>
-            Start Block: {contract.start_block_height}
-          </Text>
-        </HStack>
-        <HStack color="gray.500" fontSize="xs">
-          <CalendarIcon />
-          <Text>
-            End Block: {contract.end_block_height}
-          </Text>
-        </HStack>
-        <HStack color="gray.500" fontSize="xs">
-          <TimeIcon />
-          <Text>
-            Target: {format(new Date(contract.target_timestamp), 'PPP p')}
-          </Text>
-        </HStack>
-      </VStack>
-
-      <HStack spacing={2} mt={2}>
-        <Button 
-          size="sm" 
-          width="full" 
-          onClick={handleViewDetails}
-          colorScheme="blue"
-          variant="outline"
-        >
-          Details
-        </Button>
-        {contract.status === 'CREATED' && (
-          <Button
-            size="sm"
-            width="full"
-            onClick={handleCancelContract}
-            colorScheme="red"
-            variant="outline"
-          >
-            Cancel
-          </Button>
-        )}
-      </HStack>
-    </Box>
-  );
-};
-
-export default ContractCard;
-
-import React from 'react';
-import {
-  Box,
-  Badge,
-  Text,
-  Button,
-  HStack,
-  VStack,
-  Flex,
-  Divider,
-  Tooltip,
-  IconButton,
-  useColorMode,
-  useToast,
-} from '@chakra-ui/react';
-import { InfoIcon, SettingsIcon, CalendarIcon, TimeIcon } from '@chakra-ui/icons';
-import { format } from 'date-fns';
-import { useNavigate } from 'react-router-dom';
-import { Contract, ContractStatus, ContractType } from '../../types';
-import { useAppDispatch } from '../../hooks/redux-hooks';
-import { cancelContract } from '../../store/contract-slice';
-
-interface ContractCardProps {
-  contract: Contract;
-}
-
-const ContractCard: React.FC<ContractCardProps> = ({ contract }) => {
-  const { colorMode } = useColorMode();
-  const navigate = useNavigate();
-  const dispatch = useAppDispatch();
-  const toast = useToast();
-
-  const getStatusColor = (status: ContractStatus) => {
-    switch (status) {
-      case 'CREATED':
-        return 'yellow';
-      case 'ACTIVE':
-        return 'green';
-      case 'SETTLED':
-        return 'blue';
-      case 'EXPIRED':
-        return 'orange';
-      case 'CANCELLED':
-        return 'red';
-      default:
-        return 'gray';
-    }
-  };
-
-  const getTypeColor = (type: ContractType) => {
-    return type === 'CALL' ? 'teal' : 'purple';
-  };
-
-  const handleViewDetails = () => {
-    navigate(`/contracts/${contract.id}`);
-  };
-
-  const handleCancelContract = async () => {
-    try {
-      await dispatch(cancelContract(contract.id)).unwrap();
-      toast({
-        title: 'Contract cancelled',
-        description: 'The contract has been cancelled successfully',
-        status: 'success',
-        duration: 3000,
-        isClosable: true,
-      });
-    } catch (error) {
-      toast({
-        title: 'Error',
-        description: error as string || 'Failed to cancel contract',
-        status: 'error',
-        duration: 5000,
-        isClosable: true,
-      });
-    }
-  };
-
-  const formatSats = (sats: number) => {
-    if (sats >= 100000000) {
-      return `${(sats / 100000000).toFixed(2)} BTC`;
-    } else {
-      return `${sats.toLocaleString()} sats`;
-    }
-  };
-
-  return (
-    <Box
-      borderWidth="1px"
-      borderRadius="lg"
-      overflow="hidden"
-      boxShadow="sm"
-      bg={colorMode === 'light' ? 'white' : 'gray.800'}
-      p={4}
-      transition="transform 0.2s"
-      _hover={{ transform: 'translateY(-2px)', boxShadow: 'md' }}
-    >
-      <Flex justifyContent="space-between" alignItems="flex-start" mb={2}>
-        <HStack>
-          <Badge colorScheme={getTypeColor(contract.contract_type)} fontSize="sm">
-            {contract.contract_type}
-          </Badge>
-          <Badge colorScheme={getStatusColor(contract.status)} fontSize="sm">
-            {contract.status}
-          </Badge>
-        </HStack>
-        <Tooltip label="View contract details">
-          <IconButton
-            aria-label="View contract details"
-            icon={<InfoIcon />}
-            size="sm"
-            variant="ghost"
-            onClick={handleViewDetails}
-          />
-        </Tooltip>
-      </Flex>
-
-      <VStack align="stretch" spacing={2} mb={3}>
-        <Flex justifyContent="space-between">
-          <Text fontWeight="medium" color="gray.500" fontSize="sm">
-            Strike Hash Rate:
-          </Text>
-          <Text fontWeight="bold">{contract.strike_hash_rate.toFixed(2)} EH/s</Text>
-        </Flex>
-        <Flex justifyContent="space-between">
-          <Text fontWeight="medium" color="gray.500" fontSize="sm">
-            Contract Size:
-          </Text>
-          <Text fontWeight="bold">{formatSats(contract.contract_size)}</Text>
-        </Flex>
-        <Flex justifyContent="space-between">
-          <Text fontWeight="medium" color="gray.500" fontSize="sm">
-            Premium:
-          </Text>
-          <Text fontWeight="bold">{formatSats(contract.premium)}</Text>
-        </Flex>
-      </VStack>
-
-      <Divider my={3} />
-
-      <VStack align="stretch" spacing={2} mb={4}>
-        <HStack color="gray.500" fontSize="xs">
-          <CalendarIcon />
-          <Text>
-            Start Block: {contract.start_block_height}
-          </Text>
-        </HStack>
-        <HStack color="gray.500" fontSize="xs">
-          <CalendarIcon />
-          <Text>
-            End Block: {contract.end_block_height}
-          </Text>
-        </HStack>
-        <HStack color="gray.500" fontSize="xs">
-          <TimeIcon />
-          <Text>
-            Target: {format(new Date(contract.target_timestamp), 'PPP p')}
-          </Text>
-        </HStack>
-      </VStack>
-
-      <HStack spacing={2} mt={2}>
-        <Button 
-          size="sm" 
-          width="full" 
-          onClick={handleViewDetails}
-          colorScheme="blue"
-          variant="outline"
-        >
-          Details
-        </Button>
-        {contract.status === 'CREATED' && (
-          <Button
-            size="sm"
-            width="full"
-            onClick={handleCancelContract}
-            colorScheme="red"
-            variant="outline"
-          >
-            Cancel
-          </Button>
-        )}
-      </HStack>
-    </Box>
-  );
-};
-
-export default ContractCard;
-
+export default ContractDetails;

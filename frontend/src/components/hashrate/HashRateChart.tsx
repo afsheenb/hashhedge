@@ -1,145 +1,176 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   Box,
-  Heading,
-  Select,
   Flex,
-  Button,
+  Select,
+  Heading,
+  Text,
   useColorMode,
+  Skeleton,
 } from '@chakra-ui/react';
-import { 
-  Area, 
-  AreaChart, 
-  ResponsiveContainer, 
-  XAxis, 
-  YAxis, 
-  CartesianGrid, 
+import {
+  LineChart,
+  Line,
+  XAxis,
+  YAxis,
+  CartesianGrid,
   Tooltip,
-  Legend
+  Legend,
+  ResponsiveContainer,
+  ReferenceLine,
 } from 'recharts';
 import { useAppDispatch, useAppSelector } from '../../hooks/redux-hooks';
 import { fetchHistoricalHashRate } from '../../store/hash-rate-slice';
-import LoadingSpinner from '../common/LoadingSpinner';
-import ErrorDisplay from '../common/ErrorDisplay';
-import { format, parseISO } from 'date-fns';
+import { format } from 'date-fns';
 
-const HashRateChart: React.FC = () => {
+interface HashRateChartProps {
+  height?: string | number;
+  showControls?: boolean;
+  referenceValue?: number;
+  referenceLabel?: string;
+}
+
+const HashRateChart: React.FC<HashRateChartProps> = ({
+  height = 400,
+  showControls = true,
+  referenceValue,
+  referenceLabel,
+}) => {
   const { colorMode } = useColorMode();
   const dispatch = useAppDispatch();
-  const { historicalData, loading, error } = useAppSelector((state) => state.hashRate);
-  const [timeRange, setTimeRange] = React.useState<number>(30); // Default to 30 days
-
+  const { currentHashRate, historicalData, loading, error } = useAppSelector(
+    (state) => state.hashRate
+  );
+  
+  const [timeRange, setTimeRange] = useState<number>(30); // Default to 30 days
+  
   useEffect(() => {
     dispatch(fetchHistoricalHashRate(timeRange));
   }, [dispatch, timeRange]);
-
-  const handleRefresh = () => {
-    dispatch(fetchHistoricalHashRate(timeRange));
+  
+  const handleRangeChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
+    setTimeRange(Number(e.target.value));
   };
-
-  const handleTimeRangeChange = (event: React.ChangeEvent<HTMLSelectElement>) => {
-    setTimeRange(parseInt(event.target.value, 10));
-  };
-
-  if (loading && historicalData.length === 0) {
-    return <LoadingSpinner message="Loading hash rate data..." />;
-  }
-
-  if (error) {
-    return <ErrorDisplay message={error} onRetry={handleRefresh} />;
-  }
-
-  // Format data for the chart
-  const chartData = historicalData.map(item => ({
-    date: format(parseISO(item.timestamp), 'MMM dd'),
-    hashRate: item.hash_rate,
-    timestamp: item.timestamp,
+  
+  // Format the data for the chart
+  const chartData = historicalData.map((point) => ({
+    date: new Date(point.timestamp),
+    hashRate: point.hashRate,
   }));
-
+  
+  // Custom tooltip formatter
+  const CustomTooltip = ({ active, payload, label }: any) => {
+    if (active && payload && payload.length) {
+      return (
+        <Box
+          bg={colorMode === 'light' ? 'white' : 'gray.800'}
+          p={3}
+          borderRadius="md"
+          boxShadow="md"
+          borderWidth="1px"
+        >
+          <Text fontWeight="bold">{format(new Date(label), 'PPP')}</Text>
+          <Text>
+            Hash Rate: {payload[0].value.toFixed(2)} EH/s
+          </Text>
+        </Box>
+      );
+    }
+    return null;
+  };
+  
   return (
-    <Box
-      borderWidth="1px"
-      borderRadius="lg"
-      overflow="hidden"
-      boxShadow="sm"
-      bg={colorMode === 'light' ? 'white' : 'gray.800'}
-    >
-      <Flex px={4} py={3} borderBottomWidth="1px" justifyContent="space-between" alignItems="center">
-        <Heading size="md">Bitcoin Network Hash Rate</Heading>
-        <Flex alignItems="center">
-          <Select
-            value={timeRange}
-            onChange={handleTimeRangeChange}
-            size="sm"
-            width="auto"
-            mr={2}
+    <Box>
+      {showControls && (
+        <Flex justifyContent="space-between" alignItems="center" mb={4}>
+          <Heading size="md">Bitcoin Network Hash Rate</Heading>
+          <Select 
+            value={timeRange} 
+            onChange={handleRangeChange} 
+            width="150px"
           >
             <option value={7}>Last 7 days</option>
-            <option value={14}>Last 14 days</option>
             <option value={30}>Last 30 days</option>
             <option value={90}>Last 90 days</option>
             <option value={180}>Last 6 months</option>
-            <option value={365}>Last year</option>
+            <option value={365}>Last 1 year</option>
           </Select>
-          <Button size="sm" onClick={handleRefresh}>
-            Refresh
-          </Button>
         </Flex>
-      </Flex>
-      <Box p={4} height="400px">
-        <ResponsiveContainer width="100%" height="100%">
-          <AreaChart
-            data={chartData}
-            margin={{ top: 10, right: 30, left: 0, bottom: 0 }}
-          >
-            <defs>
-              <linearGradient id="hashRateGradient" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="5%" stopColor="#3182CE" stopOpacity={0.8} />
-                <stop offset="95%" stopColor="#3182CE" stopOpacity={0} />
-              </linearGradient>
-            </defs>
-            <CartesianGrid strokeDasharray="3 3" stroke={colorMode === 'light' ? '#E2E8F0' : '#2D3748'} />
-            <XAxis 
-              dataKey="date" 
-              tick={{ fill: colorMode === 'light' ? '#1A202C' : '#E2E8F0' }}
-            />
-            <YAxis 
-              tick={{ fill: colorMode === 'light' ? '#1A202C' : '#E2E8F0' }}
-              domain={['auto', 'auto']}
-              label={{ 
-                value: 'EH/s', 
-                angle: -90, 
-                position: 'insideLeft',
-                style: { textAnchor: 'middle', fill: colorMode === 'light' ? '#1A202C' : '#E2E8F0' } 
-              }}
-            />
-            <Tooltip
-              contentStyle={{ 
-                backgroundColor: colorMode === 'light' ? 'white' : '#1A202C',
-                borderColor: colorMode === 'light' ? '#E2E8F0' : '#2D3748',
-                color: colorMode === 'light' ? '#1A202C' : '#E2E8F0'
-              }}
-              formatter={(value: number) => [`${value.toFixed(2)} EH/s`, 'Hash Rate']}
-              labelFormatter={(value) => {
-                const dataItem = chartData.find(item => item.date === value);
-                return dataItem ? format(parseISO(dataItem.timestamp), 'PPP') : value;
-              }}
-            />
-            <Legend />
-            <Area
-              type="monotone"
-              dataKey="hashRate"
-              stroke="#3182CE"
-              fillOpacity={1}
-              fill="url(#hashRateGradient)"
-              name="Hash Rate (EH/s)"
-            />
-          </AreaChart>
-        </ResponsiveContainer>
-      </Box>
+      )}
+      
+      {loading ? (
+        <Skeleton height={height} />
+      ) : error ? (
+        <Text color="red.500">{error}</Text>
+      ) : (
+        <Box height={height}>
+          <ResponsiveContainer width="100%" height="100%">
+            <LineChart
+              data={chartData}
+              margin={{ top: 5, right: 20, left: 20, bottom: 5 }}
+            >
+              <CartesianGrid 
+                strokeDasharray="3 3" 
+                stroke={colorMode === 'light' ? '#e2e8f0' : '#2d3748'} 
+              />
+              <XAxis 
+                dataKey="date" 
+                tickFormatter={(date) => format(new Date(date), 'M/d')}
+                stroke={colorMode === 'light' ? 'black' : 'white'} 
+              />
+              <YAxis 
+                domain={['dataMin - 10', 'dataMax + 10']} 
+                label={{ 
+                  value: 'Hash Rate (EH/s)', 
+                  angle: -90, 
+                  position: 'insideLeft',
+                  style: { textAnchor: 'middle', fill: colorMode === 'light' ? 'black' : 'white' }  
+                }}
+                stroke={colorMode === 'light' ? 'black' : 'white'}
+              />
+              <Tooltip content={<CustomTooltip />} />
+              <Legend />
+              <Line
+                type="monotone"
+                dataKey="hashRate"
+                name="Hash Rate (EH/s)"
+                stroke="#3182ce"
+                strokeWidth={2}
+                dot={false}
+                activeDot={{ r: 8 }}
+                isAnimationActive={true}
+                animationDuration={1000}
+              />
+              {referenceValue && (
+                <ReferenceLine
+                  y={referenceValue}
+                  stroke="#E53E3E"
+                  strokeDasharray="3 3"
+                  label={{
+                    value: referenceLabel || `${referenceValue} EH/s`,
+                    position: 'right',
+                    fill: '#E53E3E',
+                  }}
+                />
+              )}
+              {currentHashRate && (
+                <ReferenceLine
+                  y={currentHashRate}
+                  stroke="#38A169"
+                  strokeDasharray="3 3"
+                  label={{
+                    value: `Current: ${currentHashRate.toFixed(2)} EH/s`,
+                    position: 'left',
+                    fill: '#38A169',
+                  }}
+                />
+              )}
+            </LineChart>
+          </ResponsiveContainer>
+        </Box>
+      )}
     </Box>
   );
 };
 
 export default HashRateChart;
-
