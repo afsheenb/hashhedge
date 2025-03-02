@@ -1,4 +1,3 @@
-// src/components/contracts/ContractFunding.tsx
 import React, { useState, useEffect } from 'react';
 import {
   Box,

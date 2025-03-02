@@ -23,8 +23,13 @@ import {
   ModalBody,
   ModalCloseButton,
   ModalFooter,
+  Alert,
+  AlertIcon,
+  AlertTitle,
+  AlertDescription,
+  Spinner,
 } from '@chakra-ui/react';
-import { ChevronDownIcon, ChevronUpIcon, CopyIcon, CheckIcon } from '@chakra-ui/icons';
+import { ChevronDownIcon, ChevronUpIcon, CopyIcon, CheckIcon, WarningIcon } from '@chakra-ui/icons';
 import { format } from 'date-fns';
 import { ContractTransaction } from '../../types';
 import { useAppDispatch } from '../../hooks/redux-hooks';
@@ -39,6 +44,8 @@ const ContractTransactionsList: React.FC<ContractTransactionsListProps> = ({
 }) => {
   const [expandedTx, setExpandedTx] = useState<string | null>(null);
   const [selectedTx, setSelectedTx] = useState<ContractTransaction | null>(null);
+  const [isBroadcasting, setIsBroadcasting] = useState<boolean>(false);
+  const [broadcastError, setBroadcastError] = useState<string | null>(null);
   const { onCopy, hasCopied, setValue } = useClipboard("");
   const { isOpen, onOpen, onClose } = useDisclosure();
   const toast = useToast();
@@ -65,18 +72,54 @@ const ContractTransactionsList: React.FC<ContractTransactionsListProps> = ({
   };
 
   const handleBroadcastTx = (tx: ContractTransaction) => {
+    // Validate transaction before opening modal
+    if (!tx.tx_hex || tx.tx_hex.trim() === '') {
+      toast({
+        title: "Invalid transaction",
+        description: "Transaction data is missing or invalid",
+        status: "error",
+        duration: 3000,
+        isClosable: true,
+      });
+      return;
+    }
+    
     setSelectedTx(tx);
+    setBroadcastError(null);
     onOpen();
+  };
+
+  const validateTransaction = (tx: ContractTransaction): boolean => {
+    // Basic validation
+    if (!tx) return false;
+    if (!tx.id || !tx.contract_id) return false;
+    if (!tx.tx_hex || tx.tx_hex.trim() === '') return false;
+    
+    // Additional validation could check tx format, etc.
+    return true;
   };
 
   const confirmBroadcast = async () => {
     if (!selectedTx) return;
     
+    // Validate transaction
+    if (!validateTransaction(selectedTx)) {
+      setBroadcastError("Invalid transaction data");
+      return;
+    }
+    
+    setIsBroadcasting(true);
+    setBroadcastError(null);
+    
     try {
-      await dispatch(broadcastTx({
+      const result = await dispatch(broadcastTx({
         contractId: selectedTx.contract_id,
         txId: selectedTx.id
       })).unwrap();
+      
+      if (!result) {
+        throw new Error("Received empty response from broadcast");
+      }
       
       toast({
         title: "Transaction broadcast",
@@ -88,13 +131,23 @@ const ContractTransactionsList: React.FC<ContractTransactionsListProps> = ({
       
       onClose();
     } catch (error) {
+      const errorMessage = error instanceof Error 
+        ? error.message 
+        : typeof error === 'string' 
+          ? error 
+          : 'Unknown error occurred';
+      
+      setBroadcastError(errorMessage);
+      
       toast({
         title: "Broadcast failed",
-        description: error as string,
+        description: errorMessage,
         status: "error",
         duration: 5000,
         isClosable: true,
       });
+    } finally {
+      setIsBroadcasting(false);
     }
   };
 
@@ -112,6 +165,11 @@ const ContractTransactionsList: React.FC<ContractTransactionsListProps> = ({
         return 'gray';
     }
   };
+
+  // Validate transactions array
+  if (!Array.isArray(transactions)) {
+    return <Text>Invalid transaction data</Text>;
+  }
 
   if (transactions.length === 0) {
     return <Text>No transactions found for this contract.</Text>;
@@ -150,7 +208,7 @@ const ContractTransactionsList: React.FC<ContractTransactionsListProps> = ({
                 </Td>
                 <Td>
                   <Text fontSize="sm" fontFamily="mono">
-                    {tx.transaction_id.substring(0, 10)}...
+                    {tx.transaction_id ? tx.transaction_id.substring(0, 10) + "..." : "N/A"}
                   </Text>
                 </Td>
                 <Td>
@@ -166,12 +224,14 @@ const ContractTransactionsList: React.FC<ContractTransactionsListProps> = ({
                       icon={hasCopied && expandedTx === tx.id ? <CheckIcon /> : <CopyIcon />}
                       size="sm"
                       onClick={() => handleCopyTxHex(tx.tx_hex)}
+                      isDisabled={!tx.tx_hex}
                     />
                     {!tx.confirmed && (
                       <Button
                         size="sm"
                         colorScheme="blue"
                         onClick={() => handleBroadcastTx(tx)}
+                        isDisabled={!tx.tx_hex}
                       >
                         Broadcast
                       </Button>
@@ -195,7 +255,7 @@ const ContractTransactionsList: React.FC<ContractTransactionsListProps> = ({
                         maxHeight="200px"
                         overflowY="auto"
                       >
-                        {tx.tx_hex}
+                        {tx.tx_hex || "No transaction hex available"}
                       </Box>
                       {tx.confirmed && tx.confirmed_at && (
                         <Text mt={2} fontSize="sm">
@@ -211,25 +271,49 @@ const ContractTransactionsList: React.FC<ContractTransactionsListProps> = ({
         </Tbody>
       </Table>
 
-      {/* Broadcast confirmation modal */}
+      {/* Broadcast confirmation modal with improved error handling */}
       <Modal isOpen={isOpen} onClose={onClose}>
         <ModalOverlay />
         <ModalContent>
           <ModalHeader>Broadcast Transaction</ModalHeader>
           <ModalCloseButton />
           <ModalBody>
-            <Text>
-              Are you sure you want to broadcast this {selectedTx?.tx_type} transaction to the Bitcoin network?
-            </Text>
+            {broadcastError ? (
+              <Alert status="error" mb={4}>
+                <AlertIcon as={WarningIcon} />
+                <Box>
+                  <AlertTitle>Broadcast Error</AlertTitle>
+                  <AlertDescription>{broadcastError}</AlertDescription>
+                </Box>
+              </Alert>
+            ) : (
+              <Text>
+                Are you sure you want to broadcast this {selectedTx?.tx_type} transaction to the Bitcoin network?
+              </Text>
+            )}
+            
             <Text mt={2} fontSize="sm" color="gray.600">
               This action cannot be undone. Once broadcast, the transaction will be permanently recorded on the blockchain.
             </Text>
+            
+            {isBroadcasting && (
+              <Flex justify="center" mt={4}>
+                <Spinner size="md" color="blue.500" mr={3} />
+                <Text>Broadcasting transaction...</Text>
+              </Flex>
+            )}
           </ModalBody>
           <ModalFooter>
             <Button variant="ghost" mr={3} onClick={onClose}>
               Cancel
             </Button>
-            <Button colorScheme="blue" onClick={confirmBroadcast}>
+            <Button 
+              colorScheme="blue" 
+              onClick={confirmBroadcast}
+              isLoading={isBroadcasting}
+              loadingText="Broadcasting"
+              isDisabled={isBroadcasting}
+            >
               Broadcast
             </Button>
           </ModalFooter>

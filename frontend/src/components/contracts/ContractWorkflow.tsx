@@ -340,41 +340,59 @@ const ContractWorkflow: React.FC<ContractWorkflowProps> = ({
     }
   };
   
-  // Step 5: Settle Contract
-  const handleSettleContract = async () => {
-    if (!contract) {
-      setError('No contract available');
-      openErrorModal();
-      return;
+  
+  // Step 5: Improved handleSettleContract function
+const handleSettleContract = async () => {
+  if (!contract) {
+    setError('No contract available to settle');
+    openErrorModal();
+    return;
+  }
+
+  // Verify contract is in a valid state for settlement
+  if (contract.status !== 'ACTIVE') {
+    setError(`Cannot settle contract with status: ${contract.status}`);
+    openErrorModal();
+    return;
+  }
+
+  setIsProcessing(true);
+  setStepProgress(20);
+
+  try {
+    // Step 1: Initiate settlement
+    const response = await dispatch(settleContract(contract.id)).unwrap();
+
+    if (!response) {
+      throw new Error('No response received from settlement request');
     }
-    
-    setIsProcessing(true);
-    setStepProgress(20);
-    
+
+    setStepProgress(50);
+
+    // Step 2: Set transaction for signing if available
+    if (response.transaction) {
+      setTxDetails(response.transaction);
+      openSigningModal();
+    } else {
+      console.warn('No transaction returned from settlement');
+    }
+
+    setStepProgress(80);
+
+    // Step 3: Refresh contract data with error handling
     try {
-      // Step 1: Initiate settlement
-      const response = await dispatch(settleContract(contract.id)).unwrap();
-      
-      setStepProgress(50);
-      
-      // Step 2: Set transaction for signing if available
-      if (response.transaction) {
-        setTxDetails(response.transaction);
-        openSigningModal();
-      }
-      
-      setStepProgress(80);
-      
-      // Step 3: Refresh contract data
       const updatedContract = await dispatch(getContract(contract.id)).unwrap();
+
+      if (!updatedContract) {
+        throw new Error('Failed to fetch updated contract data');
+      }
+
       setContract(updatedContract);
-      
-      setStepProgress(100);
-      
+
       // Update step if contract is settled
       if (updatedContract.status === 'SETTLED') {
         setActiveStep(4);
-        
+
         toast({
           title: 'Contract settled',
           description: `Settlement complete. ${response.buyer_wins ? 'Buyer' : 'Seller'} wins.`,
@@ -382,24 +400,63 @@ const ContractWorkflow: React.FC<ContractWorkflowProps> = ({
           duration: 5000,
           isClosable: true,
         });
+      } else {
+        toast({
+          title: 'Settlement initiated',
+          description: 'The contract settlement has been initiated but is not yet complete.',
+          status: 'info',
+          duration: 5000,
+          isClosable: true,
+        });
       }
-      
-      // Refresh wallet balance
-      dispatch(fetchWalletBalance());
-      
-      // Call completion callback if provided
-      if (updatedContract.status === 'SETTLED' && onComplete) {
-        onComplete(updatedContract);
-      }
-    } catch (err) {
-      setError(`Failed to settle contract: ${err.message || err}`);
-      openErrorModal();
-    } finally {
-      setIsProcessing(false);
-      setStepProgress(0);
+    } catch (contractError) {
+      // Log but continue - non-critical error
+      console.error('Error refreshing contract data:', contractError);
+      toast({
+        title: 'Warning',
+        description: 'Settlement initiated but failed to refresh contract data',
+        status: 'warning',
+        duration: 3000,
+        isClosable: true,
+      });
     }
-  };
-  
+
+    setStepProgress(100);
+
+    // Refresh wallet balance with error handling
+    try {
+      await dispatch(fetchWalletBalance());
+    } catch (walletError) {
+      // Non-critical error
+      console.error('Failed to refresh wallet balance:', walletError);
+    }
+
+    // Call completion callback if provided and contract is settled
+    if (contract.status === 'SETTLED' && onComplete) {
+      onComplete(contract);
+    }
+  } catch (err) {
+    const errorMessage = err instanceof Error
+      ? err.message
+      : typeof err === 'string'
+        ? err
+        : 'Unknown error occurred';
+
+    setError(`Failed to settle contract: ${errorMessage}`);
+    openErrorModal();
+
+    toast({
+      title: 'Settlement failed',
+      description: errorMessage,
+      status: 'error',
+      duration: 5000,
+      isClosable: true,
+    });
+  } finally {
+    setIsProcessing(false);
+    setStepProgress(0);
+  }
+};
   // Render contract status indicator
   const renderContractStatus = () => {
     if (!contract) return null;

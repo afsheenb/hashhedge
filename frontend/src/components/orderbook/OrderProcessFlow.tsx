@@ -204,86 +204,125 @@ const OrderProcessFlow: React.FC<OrderProcessFlowProps> = ({
     setActiveStep(1); // Move to place order step
   };
   
-  // Handle order form submission
-  const handlePlaceOrder = async (formData: PlaceOrderFormType) => {
-    if (!isConnected) {
+  
+const handlePlaceOrder = async (formData: PlaceOrderFormType) => {
+  if (!isConnected) {
+    toast({
+      title: 'Wallet not connected',
+      description: 'Please connect your wallet to place orders',
+      status: 'warning',
+      duration: 5000,
+      isClosable: true,
+    });
+    return;
+  }
+
+  // Additional validation for wallet balance
+  if (formData.side === 'buy') {
+    const totalCost = formData.price * formData.quantity;
+    if (balance && totalCost > balance.available) {
       toast({
-        title: 'Wallet not connected',
-        description: 'Please connect your wallet to place orders',
-        status: 'warning',
+        title: 'Insufficient balance',
+        description: `You need ${totalCost.toLocaleString()} sats, but only have ${balance.available.toLocaleString()} available`,
+        status: 'error',
         duration: 5000,
         isClosable: true,
       });
       return;
     }
-    
-    // Check balance for buy orders
-    if (formData.side === 'buy') {
-      const totalCost = formData.price * formData.quantity;
-      if (balance && totalCost > balance.available) {
-        toast({
-          title: 'Insufficient balance',
-          description: `You need ${totalCost.toLocaleString()} sats, but only have ${balance.available.toLocaleString()} available`,
-          status: 'error',
-          duration: 5000,
-          isClosable: true,
-        });
-        return;
-      }
+  }
+
+  setIsProcessing(true);
+  setStepProgress(20);
+  setError(null);
+
+  try {
+    // Validate user ID is present
+    if (!user?.id) {
+      throw new Error('User ID is required for placing orders');
     }
-    
-    setIsProcessing(true);
-    setStepProgress(20);
-    setError(null);
-    
+
+    // Add user ID to form data
+    const completeFormData = {
+      ...formData,
+      user_id: user.id,
+    };
+
+    setStepProgress(50);
+
+    // Submit the order
+    const order = await dispatch(placeOrder(completeFormData)).unwrap();
+
+    if (!order) {
+      throw new Error('Failed to place order: No response received');
+    }
+
+    setSubmittedOrder(order);
+    setStepProgress(80);
+
+    // Refresh order book and user orders with better error handling
     try {
-      // Add user ID to form data
-      const completeFormData = {
-        ...formData,
-        user_id: user?.id || '',
-      };
-      
-      setStepProgress(50);
-      
-      // Submit the order
-      const order = await dispatch(placeOrder(completeFormData)).unwrap();
-      setSubmittedOrder(order);
-      
-      setStepProgress(80);
-      
-      // Refresh order book and user orders
       await Promise.all([
         dispatch(getOrderBook({
           contractType: formData.contract_type.toLowerCase(),
           strikeHashRate: formData.strike_hash_rate,
         })),
-        dispatch(getUserOrders({ userId: user?.id || '' })),
+        dispatch(getUserOrders({ userId: user.id })),
       ]);
-      
-      // Refresh wallet balance
-      await dispatch(fetchWalletBalance());
-      
-      setStepProgress(100);
-      
+    } catch (refreshError) {
+      // Non-critical error - log but don't throw
+      console.error('Failed to refresh data after order placement:', refreshError);
       toast({
-        title: 'Order placed successfully',
-        description: `Your ${formData.side} order for ${formData.quantity} contracts has been placed`,
-        status: 'success',
+        title: 'Warning',
+        description: 'Order placed successfully, but failed to refresh data',
+        status: 'warning',
         duration: 5000,
         isClosable: true,
       });
-      
-      // Move to the next step
-      setActiveStep(3); // Skip to monitor step
-    } catch (err) {
-      setError(`Failed to place order: ${err.message || err}`);
-      openErrorModal();
-    } finally {
-      setIsProcessing(false);
-      setStepProgress(0);
     }
-  };
-  
+
+    // Refresh wallet balance
+    try {
+      await dispatch(fetchWalletBalance());
+    } catch (walletError) {
+      // Non-critical error - log but don't throw
+      console.error('Failed to refresh wallet balance:', walletError);
+    }
+
+    setStepProgress(100);
+
+    toast({
+      title: 'Order placed successfully',
+      description: `Your ${formData.side} order for ${formData.quantity} contracts has been placed`,
+      status: 'success',
+      duration: 5000,
+      isClosable: true,
+    });
+
+    // Move to the next step
+    setActiveStep(3); // Skip to monitor step
+  } catch (err) {
+    const errorMessage = err instanceof Error
+      ? err.message
+      : typeof err === 'string'
+        ? err
+        : 'Unknown error occurred';
+
+    setError(`Failed to place order: ${errorMessage}`);
+    openErrorModal();
+
+    toast({
+      title: 'Order placement failed',
+      description: errorMessage,
+      status: 'error',
+      duration: 5000,
+      isClosable: true,
+    });
+  } finally {
+    setIsProcessing(false);
+    setStepProgress(0);
+  }
+};
   // Handle order cancellation
   const handleCancelOrder = async (orderId: string) => {
     setIsProcessing(true);

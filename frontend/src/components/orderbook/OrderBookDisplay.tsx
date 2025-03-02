@@ -44,6 +44,36 @@ interface OrderBookDisplayProps {
   depth?: number;
 }
 
+const validateOrderBook = (orderBook: OrderBook | null): boolean => {
+  if (!orderBook) return false;
+
+  // Check if buys and sells arrays exist
+  if (!Array.isArray(orderBook.buys) || !Array.isArray(orderBook.sells)) {
+    console.error('Invalid order book format:', orderBook);
+    return false;
+  }
+
+  // Validate order objects in the arrays
+  const hasInvalidBuys = orderBook.buys.some(order =>
+    typeof order.price !== 'number' ||
+    typeof order.remaining_quantity !== 'number' ||
+    !order.id
+  );
+
+  const hasInvalidSells = orderBook.sells.some(order =>
+    typeof order.price !== 'number' ||
+    typeof order.remaining_quantity !== 'number' ||
+    !order.id
+  );
+
+  if (hasInvalidBuys || hasInvalidSells) {
+    console.error('Invalid order format detected in order book');
+    return false;
+  }
+
+  return true;
+};
+
 const OrderBookDisplay: React.FC<OrderBookDisplayProps> = ({
   orderBook,
   contractType,
@@ -59,8 +89,12 @@ const OrderBookDisplay: React.FC<OrderBookDisplayProps> = ({
   const [orderDepth, setOrderDepth] = useState(depth);
   const [isRefreshing, setIsRefreshing] = useState(false);
   
-  const buyOrders = orderBook.buys || [];
-  const sellOrders = orderBook.sells || [];
+
+  const isValidOrderBook = useMemo(() => validateOrderBook(orderBook), [orderBook]);
+
+  const buyOrders = isValidOrderBook ? orderBook.buys || [] : [];
+  const sellOrders = isValidOrderBook ? orderBook.sells || [] : [];
+
 
   // Calculate total order volumes at each price level
   const aggregatedBuys = useMemo(() => {
@@ -167,6 +201,43 @@ const OrderBookDisplay: React.FC<OrderBookDisplayProps> = ({
       onOrderSelect(matchingOrders[0], side);
     }
   };
+
+    if (!isValidOrderBook) {
+    return (
+      <Box>
+        <Flex justifyContent="space-between" alignItems="center" mb={4}>
+          <HStack>
+            <Heading size="md">Order Book</Heading>
+            <Badge colorScheme={contractType === 'CALL' ? 'teal' : 'purple'} fontSize="md" px={2} py={0.5}>
+              {contractType}
+            </Badge>
+            <Badge colorScheme="blue" fontSize="md" px={2} py={0.5}>
+              {strikeHashRate.toFixed(2)} EH/s
+            </Badge>
+          </HStack>
+
+          <Button
+            size="sm"
+            leftIcon={<RepeatIcon />}
+            onClick={handleRefresh}
+            isLoading={isRefreshing}
+          >
+            Refresh
+          </Button>
+        </Flex>
+
+        <Alert status="error" mb={4}>
+          <AlertIcon />
+          <Box>
+            <AlertTitle>Invalid Order Book Data</AlertTitle>
+            <AlertDescription>
+              The order book data is invalid or corrupted. Please try refreshing the data.
+            </AlertDescription>
+          </Box>
+        </Alert>
+      </Box>
+    );
+  }
   
   // Calculate relation to current hash rate
   const hashRateRelation = currentHashRate && strikeHashRate

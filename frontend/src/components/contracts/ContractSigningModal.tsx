@@ -1,4 +1,3 @@
-// src/components/contracts/ContractSigningModal.tsx
 import React, { useState, useEffect } from 'react';
 import {
   Modal,
