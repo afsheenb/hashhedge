@@ -1,14 +1,17 @@
-// interna/orderbook/orderbook.go
+// internal/orderbook/orderbook.go
 package orderbook
 
 import (
 	"context"
 	"fmt"
+	"sort"
 	"sync"
 	"time"
 
-    "github.com/jmoiron/sqlx"
+	"github.com/jmoiron/sqlx"
 	"github.com/google/uuid"
+	"github.com/rs/zerolog/log"
+	
 	"hashhedge/internal/contract"
 	"hashhedge/internal/db"
 	"hashhedge/internal/models"
@@ -22,40 +25,45 @@ type OrderKey struct {
 }
 
 type OrderBook struct {
-    orderRepo    *db.OrderRepository
-    tradeRepo    *db.TradeRepository
-    contractRepo *db.ContractRepository
-    contractSvc  *contract.Service
-    db           *db.DB
-    mu           sync.RWMutex
+	orderRepo    *db.OrderRepository
+	tradeRepo    *db.TradeRepository
+	contractRepo *db.ContractRepository
+	contractSvc  *contract.Service
+	db           *db.DB
+	mu           sync.RWMutex
 
-    // In-memory order books for fast matching
-    bids         map[OrderKey][]*models.Order // Buy orders
-    asks         map[OrderKey][]*models.Order // Sell orders
-    eventPublisher  chan<- models.TradeEvent
+	// In-memory order books for fast matching
+	bids         map[OrderKey][]*models.Order // Buy orders
+	asks         map[OrderKey][]*models.Order // Sell orders
+	eventPublisher  chan<- models.TradeEvent
 }
 
 func NewOrderBook(
-    db *db.DB,
-    orderRepo *db.OrderRepository,
-    tradeRepo *db.TradeRepository,
-    contractRepo *db.ContractRepository,
-    contractSvc *contract.Service,
+	db *db.DB,
+	orderRepo *db.OrderRepository,
+	tradeRepo *db.TradeRepository,
+	contractRepo *db.ContractRepository,
+	contractSvc *contract.Service,
 ) *OrderBook {
-    return &OrderBook{
-        db:           db,
-        orderRepo:    orderRepo,
-        tradeRepo:    tradeRepo,
-        contractRepo: contractRepo,
-        contractSvc:  contractSvc,
-        bids:         make(map[OrderKey][]*models.Order),
-        asks:         make(map[OrderKey][]*models.Order),
-        mu:           sync.RWMutex{},
-    }
+	return &OrderBook{
+		db:           db,
+		orderRepo:    orderRepo,
+		tradeRepo:    tradeRepo,
+		contractRepo: contractRepo,
+		contractSvc:  contractSvc,
+		bids:         make(map[OrderKey][]*models.Order),
+		asks:         make(map[OrderKey][]*models.Order),
+		mu:           sync.RWMutex{},
+	}
 }
 
 // PlaceOrder adds a new order to the order book
 func (ob *OrderBook) PlaceOrder(ctx context.Context, order *models.Order) (*models.Order, error) {
+	// Validate order
+	if err := order.Validate(); err != nil {
+		return nil, fmt.Errorf("invalid order: %w", err)
+	}
+
 	ob.mu.Lock()
 	defer ob.mu.Unlock()
 
@@ -122,6 +130,50 @@ func (ob *OrderBook) CancelOrder(ctx context.Context, orderID uuid.UUID) error {
 		return fmt.Errorf("failed to cancel order: %w", err)
 	}
 
+	// Also remove from in-memory order book
+	key := OrderKey{
+		ContractType:     order.ContractType,
+		StrikeHashRate:   order.StrikeHashRate,
+		StartBlockHeight: order.StartBlockHeight,
+		EndBlockHeight:   order.EndBlockHeight,
+	}
+
+	if order.Side == models.OrderSideBuy {
+		orders, ok := ob.bids[key]
+		if ok {
+			for i, o := range orders {
+				if o.ID == orderID {
+					// Remove this order
+					if i < len(orders)-1 {
+						orders[i] = orders[len(orders)-1]
+					}
+					ob.bids[key] = orders[:len(orders)-1]
+					if len(ob.bids[key]) == 0 {
+						delete(ob.bids, key)
+					}
+					break
+				}
+			}
+		}
+	} else {
+		orders, ok := ob.asks[key]
+		if ok {
+			for i, o := range orders {
+				if o.ID == orderID {
+					// Remove this order
+					if i < len(orders)-1 {
+						orders[i] = orders[len(orders)-1]
+					}
+					ob.asks[key] = orders[:len(orders)-1]
+					if len(ob.asks[key]) == 0 {
+						delete(ob.asks, key)
+					}
+					break
+				}
+			}
+		}
+	}
+
 	return nil
 }
 
@@ -133,6 +185,16 @@ func (ob *OrderBook) GetOrderByID(ctx context.Context, orderID uuid.UUID) (*mode
 	}
 
 	return order, nil
+}
+
+// ListUserOrders retrieves all orders for a user
+func (ob *OrderBook) ListUserOrders(ctx context.Context, userID uuid.UUID, limit, offset int) ([]*models.Order, error) {
+	orders, err := ob.orderRepo.ListUserOrders(ctx, userID, limit, offset)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list user orders: %w", err)
+	}
+
+	return orders, nil
 }
 
 // ListOpenOrders retrieves open orders that match the given criteria
@@ -209,15 +271,27 @@ func (ob *OrderBook) Start(ctx context.Context) {
 		ticker := time.NewTicker(5 * time.Minute)
 		defer ticker.Stop()
 
+		// Initial load of open orders
+		if err := ob.loadOpenOrders(ctx); err != nil {
+			log.Error().Err(err).Msg("Failed to load open orders")
+		}
+
 		for {
 			select {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
 				// Cancel expired orders
-				_, err := ob.orderRepo.CancelExpiredOrders(ctx)
+				count, err := ob.orderRepo.CancelExpiredOrders(ctx)
 				if err != nil {
-					fmt.Printf("Failed to cancel expired orders: %v\n", err)
+					log.Error().Err(err).Msg("Failed to cancel expired orders")
+				} else if count > 0 {
+					log.Info().Int64("count", count).Msg("Cancelled expired orders")
+					
+					// Reload the order book after cancelling orders
+					if err := ob.loadOpenOrders(ctx); err != nil {
+						log.Error().Err(err).Msg("Failed to reload open orders")
+					}
 				}
 			}
 		}
@@ -226,9 +300,63 @@ func (ob *OrderBook) Start(ctx context.Context) {
 
 // SetEventPublisher sets the channel for publishing trade events
 func (ob *OrderBook) SetEventPublisher(eventChan chan<- models.TradeEvent) {
-    ob.eventPublisher = eventChan
+	ob.eventPublisher = eventChan
 }
 
+// loadOpenOrders loads all open orders into memory
+func (ob *OrderBook) loadOpenOrders(ctx context.Context) error {
+	ob.mu.Lock()
+	defer ob.mu.Unlock()
+
+	// Clear existing orders
+	ob.bids = make(map[OrderKey][]*models.Order)
+	ob.asks = make(map[OrderKey][]*models.Order)
+
+	// Load open and partial orders
+	openOrders, err := ob.orderRepo.ListAllOpenOrders(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to list all open orders: %w", err)
+	}
+
+	// Process each order
+	for _, order := range openOrders {
+		key := OrderKey{
+			ContractType:     order.ContractType,
+			StrikeHashRate:   order.StrikeHashRate,
+			StartBlockHeight: order.StartBlockHeight,
+			EndBlockHeight:   order.EndBlockHeight,
+		}
+
+		if order.Side == models.OrderSideBuy {
+			ob.bids[key] = append(ob.bids[key], order)
+		} else {
+			ob.asks[key] = append(ob.asks[key], order)
+		}
+	}
+
+	// Sort orders by price and time priority
+	for key, orders := range ob.bids {
+		sort.SliceStable(orders, func(i, j int) bool {
+			if orders[i].Price == orders[j].Price {
+				return orders[i].CreatedAt.Before(orders[j].CreatedAt)
+			}
+			return orders[i].Price > orders[j].Price // Descending for buys
+		})
+		ob.bids[key] = orders
+	}
+
+	for key, orders := range ob.asks {
+		sort.SliceStable(orders, func(i, j int) bool {
+			if orders[i].Price == orders[j].Price {
+				return orders[i].CreatedAt.Before(orders[j].CreatedAt)
+			}
+			return orders[i].Price < orders[j].Price // Ascending for sells
+		})
+		ob.asks[key] = orders
+	}
+
+	return nil
+}
 
 // matchBuyOrder matches a buy order against the order book
 func (ob *OrderBook) matchBuyOrder(ctx context.Context, buyOrder *models.Order) (bool, error) {
@@ -238,9 +366,6 @@ func (ob *OrderBook) matchBuyOrder(ctx context.Context, buyOrder *models.Order) 
 		StartBlockHeight: buyOrder.StartBlockHeight,
 		EndBlockHeight:   buyOrder.EndBlockHeight,
 	}
-
-	ob.mu.Lock()
-	defer ob.mu.Unlock()
 
 	// Find matching sell orders
 	sellOrders, ok := ob.asks[key]
@@ -364,9 +489,6 @@ func (ob *OrderBook) matchSellOrder(ctx context.Context, sellOrder *models.Order
 		StartBlockHeight: sellOrder.StartBlockHeight,
 		EndBlockHeight:   sellOrder.EndBlockHeight,
 	}
-
-	ob.mu.Lock()
-	defer ob.mu.Unlock()
 
 	// Find matching buy orders
 	buyOrders, ok := ob.bids[key]
@@ -643,7 +765,6 @@ func (ob *OrderBook) tryMatchOrder(ctx context.Context, order *models.Order) (bo
 	}
 
 	// Add the order to the appropriate side of the order book
-	ob.mu.Lock()
 	if order.Side == models.OrderSideBuy {
 		// Add to bids
 		ob.bids[key] = append(ob.bids[key], order)
@@ -651,7 +772,6 @@ func (ob *OrderBook) tryMatchOrder(ctx context.Context, order *models.Order) (bo
 		// Add to asks
 		ob.asks[key] = append(ob.asks[key], order)
 	}
-	ob.mu.Unlock()
 
 	// Try to match the order based on its side
 	var matched bool

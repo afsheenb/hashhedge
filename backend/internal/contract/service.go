@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"math"
 	"time"
 
 	"github.com/btcsuite/btcd/btcutil"
@@ -14,6 +15,7 @@ import (
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/google/uuid"
+	"github.com/rs/zerolog/log"
 	
 	"hashhedge/internal/contract/hashrate"
 	"hashhedge/internal/db"
@@ -121,9 +123,6 @@ func (s *Service) parseTransactionInput(ctx context.Context, txHex string) (*wir
 
 	return &tx, nil
 }
-
-// internal/contract/service.go
-// Implementation of GenerateSetupTransaction
 
 // GenerateSetupTransaction creates the setup transaction for a contract
 func (s *Service) GenerateSetupTransaction(
@@ -242,10 +241,15 @@ func (s *Service) GenerateSetupTransaction(
 	tx.AddTxOut(contractOutput)
 	
 	// Calculate change amount (accounting for fees)
-	// In a real implementation, use proper fee estimation
-	feeRate := int64(5) // sats per byte
-	estimatedSize := tx.SerializeSize() + 100 // Add some buffer for signatures
-	estimatedFee := int64(estimatedSize) * feeRate
+	// Use proper fee estimation
+	numInputs := len(buyerInputs) + len(sellerInputs)
+	numOutputs := 3 // Contract output + potential buyer/seller change outputs
+	feeRate := float64(5) // sats per byte - in production use proper fee estimation
+	
+	estimatedFee, err := s.bitcoinClient.EstimateFee(ctx, numInputs, numOutputs, feeRate)
+	if err != nil {
+		return nil, fmt.Errorf("failed to estimate fee: %w", err)
+	}
 	
 	changeAmount := totalInputAmount - contract.ContractSize - estimatedFee
 	
@@ -313,34 +317,61 @@ func (s *Service) GenerateSetupTransaction(
 	txHex := hex.EncodeToString(buf.Bytes())
 	txid := tx.TxHash().String()
 
-	// Create and return transaction record
-	txRecord := &models.ContractTransaction{
-		ID:            uuid.New(),
-		ContractID:    contractID,
-		TransactionID: txid,
-		TxType:        "setup",
-		TxHex:         txHex,
-		Confirmed:     false,
-		CreatedAt:     time.Now().UTC(),
-	}
+	// Use transactions to update contract state and save transaction atomically
+	err = s.contractRepo.ExecuteInTransaction(ctx, func(tx *sqlx.Tx) error {
+		// Create and save transaction record
+		txRecord := &models.ContractTransaction{
+			ID:            uuid.New(),
+			ContractID:    contractID,
+			TransactionID: txid,
+			TxType:        "setup",
+			TxHex:         txHex,
+			Confirmed:     false,
+			CreatedAt:     time.Now().UTC(),
+		}
 
-	// Update contract status and set setup tx ID
-	contract.Status = models.ContractStatusActive
-	contract.SetupTxID = &txRecord.TransactionID
-	contract.UpdatedAt = time.Now().UTC()
+		// Update contract status and set setup tx ID
+		contract.Status = models.ContractStatusActive
+		contract.SetupTxID = &txRecord.TransactionID
+		contract.UpdatedAt = time.Now().UTC()
+		
+		// Save transaction 
+		// Use repository methods that accept the transaction
+		if err := s.contractRepo.AddTransaction(ctx, txRecord); err != nil {
+			return fmt.Errorf("failed to add transaction: %w", err)
+		}
+		
+		// Update contract
+		if err := s.contractRepo.Update(ctx, contract); err != nil {
+			return fmt.Errorf("failed to update contract status: %w", err)
+		}
+		
+		return nil
+	})
 	
-	err = s.contractRepo.Update(ctx, contract)
 	if err != nil {
-		return nil, fmt.Errorf("failed to update contract status: %w", err)
+		return nil, fmt.Errorf("failed to process setup transaction: %w", err)
 	}
 
-	// Save the transaction
-	err = s.contractRepo.AddTransaction(ctx, txRecord)
+	// Get the saved transaction to return
+	transactions, err := s.contractRepo.GetTransactionsByContractID(ctx, contractID)
 	if err != nil {
-		return nil, fmt.Errorf("failed to add transaction: %w", err)
+		return nil, fmt.Errorf("failed to get transactions: %w", err)
+	}
+	
+	var setupTx *models.ContractTransaction
+	for _, tx := range transactions {
+		if tx.TxType == "setup" && tx.TransactionID == txid {
+			setupTx = tx
+			break
+		}
+	}
+	
+	if setupTx == nil {
+		return nil, fmt.Errorf("setup transaction not found after creation")
 	}
 
-	return txRecord, nil
+	return setupTx, nil
 }
 
 // GenerateFinalTransaction creates the final transaction for a contract
@@ -419,8 +450,20 @@ func (s *Service) GenerateFinalTransaction(
 		return nil, fmt.Errorf("failed to create final output script: %w", err)
 	}
 	
+	// Calculate fee for the transaction
+	feeRate := float64(5) // sats per byte - in production use proper fee estimation
+	estimatedFee, err := s.bitcoinClient.EstimateFee(ctx, 1, 1, feeRate)
+	if err != nil {
+		return nil, fmt.Errorf("failed to estimate fee: %w", err)
+	}
+	
 	// The output value is slightly less than input to account for fees
-	finalOutput := wire.NewTxOut(contract.ContractSize - 500, finalScriptPubKey)
+	outputValue := setupMsgTx.TxOut[0].Value - estimatedFee
+	if outputValue < 0 {
+		return nil, fmt.Errorf("fees exceed input value")
+	}
+	
+	finalOutput := wire.NewTxOut(outputValue, finalScriptPubKey)
 	tx.AddTxOut(finalOutput)
 	
 	// Serialize the final transaction
@@ -432,42 +475,66 @@ func (s *Service) GenerateFinalTransaction(
 	txHex := hex.EncodeToString(buf.Bytes())
 	txid := tx.TxHash().String()
 
-	// Create transaction record
-	txRecord := &models.ContractTransaction{
-		ID:            uuid.New(),
-		ContractID:    contractID,
-		TransactionID: txid,
-		TxType:        "final",
-		TxHex:         txHex,
-		Confirmed:     false,
-		CreatedAt:     time.Now().UTC(),
-	}
+	// Use transactions to update contract state and save transaction atomically
+	err = s.contractRepo.ExecuteInTransaction(ctx, func(tx *sqlx.Tx) error {
+		// Create transaction record
+		txRecord := &models.ContractTransaction{
+			ID:            uuid.New(),
+			ContractID:    contractID,
+			TransactionID: txid,
+			TxType:        "final",
+			TxHex:         txHex,
+			Confirmed:     false,
+			CreatedAt:     time.Now().UTC(),
+		}
 
-	// Validate the transaction record
-	if err := txRecord.Validate(); err != nil {
-		return nil, fmt.Errorf("invalid transaction record: %w", err)
-	}
+		// Validate the transaction record
+		if err := txRecord.Validate(); err != nil {
+			return fmt.Errorf("invalid transaction record: %w", err)
+		}
 
-	// Update contract and set final tx ID
-	contract.FinalTxID = &txRecord.TransactionID
-	contract.UpdatedAt = time.Now().UTC()
-	err = s.contractRepo.Update(ctx, contract)
+		// Update contract and set final tx ID
+		contract.FinalTxID = &txRecord.TransactionID
+		contract.UpdatedAt = time.Now().UTC()
+		
+		// Save transaction
+		if err := s.contractRepo.AddTransaction(ctx, txRecord); err != nil {
+			return fmt.Errorf("failed to add transaction: %w", err)
+		}
+		
+		// Update contract
+		if err := s.contractRepo.Update(ctx, contract); err != nil {
+			return fmt.Errorf("failed to update contract: %w", err)
+		}
+		
+		return nil
+	})
+	
 	if err != nil {
-		return nil, fmt.Errorf("failed to update contract: %w", err)
+		return nil, fmt.Errorf("failed to process final transaction: %w", err)
 	}
 
-	// Save the transaction
-	err = s.contractRepo.AddTransaction(ctx, txRecord)
+	// Get the saved transaction to return
+	transactions, err := s.contractRepo.GetTransactionsByContractID(ctx, contractID)
 	if err != nil {
-		return nil, fmt.Errorf("failed to add transaction: %w", err)
+		return nil, fmt.Errorf("failed to get transactions: %w", err)
+	}
+	
+	var finalTx *models.ContractTransaction
+	for _, tx := range transactions {
+		if tx.TxType == "final" && tx.TransactionID == txid {
+			finalTx = tx
+			break
+		}
+	}
+	
+	if finalTx == nil {
+		return nil, fmt.Errorf("final transaction not found after creation")
 	}
 
-	return txRecord, nil
+	return finalTx, nil
 }
 
-
-// internal/contract/service.go
-// Implementation of SettleContract
 
 // SettleContract settles the contract based on the actual hash rate
 func (s *Service) SettleContract(
@@ -596,9 +663,21 @@ func (s *Service) SettleContract(
 		return nil, false, fmt.Errorf("failed to create settlement output script: %w", err)
 	}
 	
+	// Calculate fee for the transaction
+	feeRate := float64(5) // sats per byte - in production use proper fee estimation
+	estimatedFee, err := s.bitcoinClient.EstimateFee(ctx, 1, 1, feeRate)
+	if err != nil {
+		return nil, false, fmt.Errorf("failed to estimate fee: %w", err)
+	}
+	
 	// The output value is slightly less than input to account for fees
 	inputValue := finalMsgTx.TxOut[0].Value
-	settlementOutput := wire.NewTxOut(inputValue - 500, settlementScriptPubKey) // 500 sats for fees
+	outputValue := inputValue - estimatedFee
+	if outputValue < 0 {
+		return nil, false, fmt.Errorf("fees exceed input value")
+	}
+	
+	settlementOutput := wire.NewTxOut(outputValue, settlementScriptPubKey)
 	tx.AddTxOut(settlementOutput)
 	
 	// Serialize the settlement transaction
@@ -610,35 +689,61 @@ func (s *Service) SettleContract(
 	txHex := hex.EncodeToString(buf.Bytes())
 	txid := tx.TxHash().String()
 
-	// Create transaction record
-	txRecord := &models.ContractTransaction{
-		ID:            uuid.New(),
-		ContractID:    contractID,
-		TransactionID: txid,
-		TxType:        "settlement",
-		TxHex:         txHex,
-		Confirmed:     false,
-		CreatedAt:     time.Now().UTC(),
-	}
+	// Use transactions to update contract state and save transaction atomically
+	err = s.contractRepo.ExecuteInTransaction(ctx, func(tx *sqlx.Tx) error {
+		// Create transaction record
+		txRecord := &models.ContractTransaction{
+			ID:            uuid.New(),
+			ContractID:    contractID,
+			TransactionID: txid,
+			TxType:        "settlement",
+			TxHex:         txHex,
+			Confirmed:     false,
+			CreatedAt:     time.Now().UTC(),
+		}
 
-	// Update contract status and set settlement tx ID
-	contract.Status = models.ContractStatusSettled
-	contract.SettlementTxID = &txRecord.TransactionID
-	contract.UpdatedAt = time.Now().UTC()
+		// Update contract status and set settlement tx ID
+		contract.Status = models.ContractStatusSettled
+		contract.SettlementTxID = &txRecord.TransactionID
+		contract.UpdatedAt = time.Now().UTC()
+		
+		// Save transaction
+		if err := s.contractRepo.AddTransaction(ctx, txRecord); err != nil {
+			return fmt.Errorf("failed to add transaction: %w", err)
+		}
+		
+		// Update contract
+		if err := s.contractRepo.Update(ctx, contract); err != nil {
+			return fmt.Errorf("failed to update contract: %w", err)
+		}
+		
+		return nil
+	})
 	
-	err = s.contractRepo.Update(ctx, contract)
 	if err != nil {
-		return nil, false, fmt.Errorf("failed to update contract status: %w", err)
+		return nil, false, fmt.Errorf("failed to process settlement transaction: %w", err)
 	}
 
-	// Save the transaction
-	err = s.contractRepo.AddTransaction(ctx, txRecord)
+	// Get the saved transaction to return
+	transactions, err := s.contractRepo.GetTransactionsByContractID(ctx, contractID)
 	if err != nil {
-		return nil, false, fmt.Errorf("failed to add transaction: %w", err)
+		return nil, false, fmt.Errorf("failed to get transactions: %w", err)
+	}
+	
+	var settlementTx *models.ContractTransaction
+	for _, tx := range transactions {
+		if tx.TxType == "settlement" && tx.TransactionID == txid {
+			settlementTx = tx
+			break
+		}
+	}
+	
+	if settlementTx == nil {
+		return nil, false, fmt.Errorf("settlement transaction not found after creation")
 	}
 	
 	// Try to broadcast the transaction
-	_, err = s.bitcoinClient.BroadcastTransaction(ctx, txHex)
+	_, err = s.bitcoinClient.BroadcastTransactionWithRetry(ctx, txHex)
 	if err != nil {
 		// Just log the error - we still return the transaction
 		// so the user can broadcast it manually if needed
@@ -648,7 +753,7 @@ func (s *Service) SettleContract(
 			Msg("Failed to broadcast settlement transaction")
 	}
 
-	return txRecord, buyerWins, nil
+	return settlementTx, buyerWins, nil
 }
 
 
@@ -734,36 +839,40 @@ func (s *Service) CheckSettlementConditions(ctx context.Context, contractID uuid
 }
 
 // BroadcastTransaction broadcasts a transaction to the Bitcoin network
-func (s *Service) BroadcastTransaction(ctx context.Context, txID uuid.UUID) (string, error) {
+func (s *Service) BroadcastTransaction(ctx context.Context, contractID uuid.UUID, txID uuid.UUID) (string, error) {
 	// Get the transaction from the database
-	txs, err := s.contractRepo.GetTransactionsByContractID(ctx, uuid.UUID{})
+	if contractID == uuid.Nil || txID == uuid.Nil {
+		return "", fmt.Errorf("contract ID and transaction ID must be provided")
+	}
+	
+	// Get the transaction
+	tx, err := s.contractRepo.GetTransactionByID(ctx, txID)
 	if err != nil {
-		return "", fmt.Errorf("failed to get transactions: %w", err)
+		return "", fmt.Errorf("failed to get transaction: %w", err)
 	}
 	
-	var transaction *models.ContractTransaction
-	for _, tx := range txs {
-		if tx.ID == txID {
-			transaction = tx
-			break
-		}
-	}
-	
-	if transaction == nil {
-		return "", errors.New("transaction not found")
+	// Validate that the transaction belongs to the contract
+	if tx.ContractID != contractID {
+		return "", fmt.Errorf("transaction does not belong to the specified contract")
 	}
 	
 	// Broadcast the transaction
-	txHash, err := s.bitcoinClient.BroadcastTransaction(ctx, transaction.TxHex)
+	txHash, err := s.bitcoinClient.BroadcastTransactionWithRetry(ctx, tx.TxHex)
 	if err != nil {
 		return "", fmt.Errorf("failed to broadcast transaction: %w", err)
 	}
 	
 	// Update the transaction ID if it was changed by the network
-	if txHash != transaction.TransactionID {
-		transaction.TransactionID = txHash
+	if txHash != tx.TransactionID {
+		tx.TransactionID = txHash
 		// Update the transaction in the database
-		// This would require adding a new method to the repository
+		err = s.contractRepo.AddTransaction(ctx, tx)
+		if err != nil {
+			log.Warn().Err(err).
+				Str("contractID", contractID.String()).
+				Str("txID", txID.String()).
+				Msg("Failed to update transaction ID after broadcast")
+		}
 	}
 	
 	return txHash, nil
@@ -796,8 +905,19 @@ func (s *Service) SwapContractParticipant(
 		return nil, errors.New("current public key does not match any participant")
 	}
 	
-	// Get ASP public key (would come from configuration in real implementation)
-	aspPubKey := "0250929b74c1a04954b78b4b6035e97a5e078a5a0f28ec96d547bfee9ace803ac0" // Example
+	// Validate new public key
+	if newPubKey == "" {
+		return nil, errors.New("new public key cannot be empty")
+	}
+	
+	// Try to decode the new public key to validate its format
+	_, err = hex.DecodeString(newPubKey)
+	if err != nil {
+		return nil, fmt.Errorf("invalid new public key format: %w", err)
+	}
+	
+	// Get the ASP public key
+	aspPubKey := s.taprootScriptBuilder.ASPPubKey
 	
 	// Build swap script
 	swapScript, err := s.taprootScriptBuilder.BuildSwapScript(
@@ -889,9 +1009,16 @@ func (s *Service) SwapContractParticipant(
 		return nil, fmt.Errorf("failed to create exiting participant change script: %w", err)
 	}
 	
-	// Calculate change amount (simplified)
+	// Calculate change amount with proper fee estimation
+	feeRate := float64(5) // sats per byte
+	estimatedFee, err := s.bitcoinClient.EstimateFee(ctx, 2, 2, feeRate)
+	if err != nil {
+		return nil, fmt.Errorf("failed to estimate fee: %w", err)
+	}
+	
+	// Calculate change amount
 	inputValue := msgTx.TxOut[0].Value
-	changeAmount := inputValue - 1000 // 1000 satoshis for fees
+	changeAmount := inputValue - estimatedFee
 	
 	if changeAmount > 0 {
 		changeOutput := wire.NewTxOut(changeAmount, exitingChangeScript)
@@ -907,42 +1034,69 @@ func (s *Service) SwapContractParticipant(
 	txHex := hex.EncodeToString(buf.Bytes())
 	txid := tx.TxHash().String()
 
-	// Create transaction record
-	txRecord := &models.ContractTransaction{
-		ID:            uuid.New(),
-		ContractID:    contractID,
-		TransactionID: txid,
-		TxType:        "swap",
-		TxHex:         txHex,
-		Confirmed:     false,
-		CreatedAt:     time.Now().UTC(),
+	// Use transactions to update contract state and save transaction atomically
+	err = s.contractRepo.ExecuteInTransaction(ctx, func(tx *sqlx.Tx) error {
+		// Create transaction record
+		txRecord := &models.ContractTransaction{
+			ID:            uuid.New(),
+			ContractID:    contractID,
+			TransactionID: txid,
+			TxType:        "swap",
+			TxHex:         txHex,
+			Confirmed:     false,
+			CreatedAt:     time.Now().UTC(),
+		}
+
+		// Validate the transaction record
+		if err := txRecord.Validate(); err != nil {
+			return fmt.Errorf("invalid transaction record: %w", err)
+		}
+
+		// Update contract with new participant
+		if isBuyer {
+			contract.BuyerPubKey = newPubKey
+		} else {
+			contract.SellerPubKey = newPubKey
+		}
+		
+		contract.UpdatedAt = time.Now().UTC()
+		
+		// Save transaction
+		if err := s.contractRepo.AddTransaction(ctx, txRecord); err != nil {
+			return fmt.Errorf("failed to add transaction: %w", err)
+		}
+		
+		// Update contract
+		if err := s.contractRepo.Update(ctx, contract); err != nil {
+			return fmt.Errorf("failed to update contract: %w", err)
+		}
+		
+		return nil
+	})
+	
+	if err != nil {
+		return nil, fmt.Errorf("failed to process swap transaction: %w", err)
 	}
 
-	// Validate the transaction record
-	if err := txRecord.Validate(); err != nil {
-		return nil, fmt.Errorf("invalid transaction record: %w", err)
-	}
-
-	// Update contract with new participant
-	if isBuyer {
-		contract.BuyerPubKey = newPubKey
-	} else {
-		contract.SellerPubKey = newPubKey
+	// Get the saved transaction to return
+	transactions, err := s.contractRepo.GetTransactionsByContractID(ctx, contractID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get transactions: %w", err)
 	}
 	
-	contract.UpdatedAt = time.Now().UTC()
-	err = s.contractRepo.Update(ctx, contract)
-	if err != nil {
-		return nil, fmt.Errorf("failed to update contract: %w", err)
+	var swapTx *models.ContractTransaction
+	for _, tx := range transactions {
+		if tx.TxType == "swap" && tx.TransactionID == txid {
+			swapTx = tx
+			break
+		}
+	}
+	
+	if swapTx == nil {
+		return nil, fmt.Errorf("swap transaction not found after creation")
 	}
 
-	// Save the transaction
-	err = s.contractRepo.AddTransaction(ctx, txRecord)
-	if err != nil {
-		return nil, fmt.Errorf("failed to add transaction: %w", err)
-	}
-
-	return txRecord, nil
+	return swapTx, nil
 }
 
 // ExpireContract marks a contract as expired if it's past its expiration time

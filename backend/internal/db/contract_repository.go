@@ -8,6 +8,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jmoiron/sqlx"
+	"github.com/rs/zerolog/log"
 	"hashhedge/internal/models"
 )
 
@@ -182,12 +183,31 @@ func (r *ContractRepository) GetTransactionsByContractID(ctx context.Context, co
 		ORDER BY created_at ASC
 	`
 
+	// Ensure we're not passing an empty UUID
+	if contractID == uuid.Nil {
+		log.Warn().Msg("GetTransactionsByContractID called with empty UUID")
+		return []*models.ContractTransaction{}, nil
+	}
+
 	err := r.db.SelectContext(ctx, &transactions, query, contractID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get transactions for contract: %w", err)
 	}
 
 	return transactions, nil
+}
+
+// GetTransactionByID retrieves a specific transaction by its ID
+func (r *ContractRepository) GetTransactionByID(ctx context.Context, txID uuid.UUID) (*models.ContractTransaction, error) {
+	var tx models.ContractTransaction
+
+	query := `SELECT * FROM contract_transactions WHERE id = $1`
+	err := r.db.GetContext(ctx, &tx, query, txID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get transaction by ID: %w", err)
+	}
+
+	return &tx, nil
 }
 
 // CountActiveContracts counts the number of active contracts
@@ -205,4 +225,9 @@ func (r *ContractRepository) CountActiveContracts(ctx context.Context) (int, err
 	}
 
 	return count, nil
+}
+
+// ExecuteInTransaction executes the given function within a database transaction
+func (r *ContractRepository) ExecuteInTransaction(ctx context.Context, fn func(*sqlx.Tx) error) error {
+	return r.db.WithTransaction(ctx, fn)
 }

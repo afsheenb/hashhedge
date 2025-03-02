@@ -15,8 +15,8 @@ import (
 	"github.com/btcsuite/btcd/wire"
 )
 
-// BroadcastTransaction broadcasts a raw transaction to the network with retry logic
-func (c *Client) BroadcastTransaction(ctx context.Context, txHex string) (string, error) {
+// BroadcastTransactionWithRetry broadcasts a raw transaction to the network with retry logic
+func (c *Client) BroadcastTransactionWithRetry(ctx context.Context, txHex string) (string, error) {
 	// Decode the transaction hex
 	txBytes, err := hex.DecodeString(txHex)
 	if err != nil {
@@ -25,7 +25,7 @@ func (c *Client) BroadcastTransaction(ctx context.Context, txHex string) (string
 
 	// Deserialize the transaction
 	var tx wire.MsgTx
-	if err := tx.Deserialize(txBytes); err != nil {
+	if err := tx.Deserialize(hex.NewDecoder(txBytes)); err != nil {
 		return "", fmt.Errorf("failed to deserialize transaction: %w", err)
 	}
 
@@ -68,28 +68,15 @@ func (c *Client) BroadcastTransaction(ctx context.Context, txHex string) (string
 
 // isAlreadyInMempoolError checks if the error indicates the transaction is already in the mempool
 func isAlreadyInMempoolError(err error) bool {
-	return err != nil && (errors.Is(err, btcutil.ErrDuplicateTx) || 
-		errors.Is(err, txscript.ErrUnsupportedScriptType) ||
-		errors.Is(err, chaincfg.ErrDuplicateNet))
-}
-
-// EstimateFee estimates the fee for a transaction with the given number of inputs and outputs
-func (c *Client) EstimateFee(ctx context.Context, numInputs, numOutputs int, feeRate float64) (int64, error) {
-	// Estimate transaction size
-	// P2PKH input: ~148 bytes, P2PKH output: ~34 bytes
-	// Add 10 bytes for version, locktime, etc.
-	txSize := 10 + (numInputs * 148) + (numOutputs * 34)
-	
-	// Calculate fee based on size and fee rate (satoshis per byte)
-	fee := int64(float64(txSize) * feeRate)
-	
-	// Ensure minimum relay fee (typically 1000 satoshis)
-	minFee := int64(1000)
-	if fee < minFee {
-		fee = minFee
+	if err == nil {
+		return false
 	}
 	
-	return fee, nil
+	errMsg := err.Error()
+	return errors.Is(err, btcutil.ErrDuplicateTx) || 
+		errors.Is(err, txscript.ErrUnsupportedScriptType) ||
+		errors.Is(err, chaincfg.ErrDuplicateNet) ||
+		(len(errMsg) > 6 && errMsg[:6] == "txn-already-in-mempool")
 }
 
 // CreateMultisigAddress creates an n-of-m multisig address

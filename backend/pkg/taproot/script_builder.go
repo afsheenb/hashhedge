@@ -2,7 +2,6 @@
 package taproot
 
 import (
-	"github.com/btcsuite/btcd/wire"
     "bytes"
     "encoding/hex"
     "fmt"
@@ -15,13 +14,23 @@ import (
 )
 
 // ScriptBuilder creates Taproot scripts for hash rate contracts
-type ScriptBuilder struct{}
+type ScriptBuilder struct{
+    ASPPubKey string // Ark Service Provider public key
+}
 
 // NewScriptBuilder creates a new ScriptBuilder
 func NewScriptBuilder() *ScriptBuilder {
-	return &ScriptBuilder{}
+    // Default ASP key - should be configured in a real implementation
+    return &ScriptBuilder{
+        ASPPubKey: "0250929b74c1a04954b78b4b6035e97a5e078a5a0f28ec96d547bfee9ace803ac0",
+    }
 }
 
+// WithASPPubKey sets a custom ASP public key
+func (b *ScriptBuilder) WithASPPubKey(pubKey string) *ScriptBuilder {
+    b.ASPPubKey = pubKey
+    return b
+}
 
 // BuildSetupScript creates the script for the setup transaction
 func (b *ScriptBuilder) BuildSetupScript(
@@ -32,6 +41,19 @@ func (b *ScriptBuilder) BuildSetupScript(
     targetTimestamp time.Time,
     isCall bool,
 ) (string, error) {
+    // Validate inputs
+    if buyerPubKey == "" || sellerPubKey == "" {
+        return "", fmt.Errorf("buyer and seller public keys cannot be empty")
+    }
+    
+    if startBlockHeight <= 0 || endBlockHeight <= startBlockHeight {
+        return "", fmt.Errorf("invalid block heights: start=%d, end=%d", startBlockHeight, endBlockHeight)
+    }
+    
+    if targetTimestamp.Before(time.Now()) {
+        return "", fmt.Errorf("target timestamp must be in the future")
+    }
+
     // Decode the buyer's public key
     buyerPK, err := hex.DecodeString(buyerPubKey)
     if err != nil {
@@ -89,6 +111,7 @@ func (b *ScriptBuilder) BuildSetupScript(
     }
 
     scriptTree := txscript.NewBaseTapscriptTree()
+    scriptTree.AddLeaf(cooperativeScript)
     scriptTree.AddLeaf(highHashRateScript)
     scriptTree.AddLeaf(lowHashRateScript)
 
@@ -120,6 +143,19 @@ func (b *ScriptBuilder) BuildFinalScript(
     targetTimestamp time.Time,
     isCall bool,
 ) (string, error) {
+    // Validate inputs
+    if buyerPubKey == "" || sellerPubKey == "" {
+        return "", fmt.Errorf("buyer and seller public keys cannot be empty")
+    }
+    
+    if endBlockHeight <= 0 {
+        return "", fmt.Errorf("invalid end block height: %d", endBlockHeight)
+    }
+    
+    if targetTimestamp.IsZero() {
+        return "", fmt.Errorf("target timestamp cannot be zero")
+    }
+
     // Decode the buyer's public key
     buyerPK, err := hex.DecodeString(buyerPubKey)
     if err != nil {
@@ -172,13 +208,16 @@ func (b *ScriptBuilder) BuildFinalScript(
     // Create a dispute resolution path that requires 2-of-3 signatures
     // (buyer, seller, and ASP can resolve a dispute)
     // This is for cases where settlement is disputed
-    aspPubKey := []byte{0x02, 0x00, 0x00, 0x00, 0x00} // Example ASP public key - in real implementation, use actual ASP key
+    aspPK, err := hex.DecodeString(b.ASPPubKey)
+    if err != nil {
+        return "", fmt.Errorf("invalid ASP public key: %w", err)
+    }
     
     disputeScript, err := txscript.NewScriptBuilder().
         AddOp(txscript.OP_2).                   // 2 signatures required
         AddData(buyerPK).                       // Buyer's public key
         AddData(sellerPK).                      // Seller's public key
-        AddData(aspPubKey).                     // ASP's public key
+        AddData(aspPK).                         // ASP's public key
         AddOp(txscript.OP_3).                   // 3 public keys total
         AddOp(txscript.OP_CHECKMULTISIG).       // Check the multisig
         Script()
@@ -221,6 +260,10 @@ func (b *ScriptBuilder) BuildFinalScript(
 func (b *ScriptBuilder) BuildSettlementScript(
     winnerPubKey string,
 ) (string, error) {
+    if winnerPubKey == "" {
+        return "", fmt.Errorf("winner public key cannot be empty")
+    }
+
     // Decode the winner's public key
     winnerPK, err := hex.DecodeString(winnerPubKey)
     if err != nil {
@@ -256,6 +299,16 @@ func (b *ScriptBuilder) BuildSwapScript(
     newPubKey string,
     aspPubKey string,
 ) (string, error) {
+    // Validate inputs
+    if currentPubKey == "" || newPubKey == "" {
+        return "", fmt.Errorf("current and new public keys cannot be empty")
+    }
+    
+    // If ASP key wasn't provided, use the default one from the builder
+    if aspPubKey == "" {
+        aspPubKey = b.ASPPubKey
+    }
+
     // Decode the public keys
     currentPK, err := hex.DecodeString(currentPubKey)
     if err != nil {
@@ -322,6 +375,15 @@ func (b *ScriptBuilder) BuildExitPathScript(
     sellerPubKey string,
     timeoutBlocks int64,
 ) (string, error) {
+    // Validate inputs
+    if buyerPubKey == "" || sellerPubKey == "" {
+        return "", fmt.Errorf("buyer and seller public keys cannot be empty")
+    }
+    
+    if timeoutBlocks <= 0 {
+        return "", fmt.Errorf("timeout blocks must be positive")
+    }
+
     // Decode the buyer's public key
     buyerPK, err := hex.DecodeString(buyerPubKey)
     if err != nil {

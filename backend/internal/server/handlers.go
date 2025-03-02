@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -58,6 +59,27 @@ func errorResponse(w http.ResponseWriter, statusCode int, message string) {
 		Success: false,
 		Error:   message,
 	})
+}
+
+// validateUserPermissions validates if the user has permissions to access a resource
+// For MVP, we'll do simple validation, but this should be expanded for production
+func (h *Handler) validateUserPermissions(r *http.Request, resourceUserID uuid.UUID) bool {
+	// In a real implementation, this would check JWT tokens, session data, etc.
+	// For MVP, we'll assume the user ID in the request is valid
+	// and compare it with the resource's user ID if applicable
+	
+	// Get user ID from request context/headers/etc.
+	// For MVP, we'll just return true
+	return true
+}
+
+// sanitizeInput performs basic input sanitization
+func sanitizeInput(input string) string {
+	// Simple sanitization for MVP - should be expanded for production
+	input = strings.TrimSpace(input)
+	input = strings.Replace(input, "<", "&lt;", -1)
+	input = strings.Replace(input, ">", "&gt;", -1)
+	return input
 }
 
 // GetContract handles retrieving contract details
@@ -178,6 +200,10 @@ func (h *Handler) CreateContract(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Sanitize inputs
+	req.BuyerPubKey = sanitizeInput(req.BuyerPubKey)
+	req.SellerPubKey = sanitizeInput(req.SellerPubKey)
+
 	if req.BuyerPubKey == "" || req.SellerPubKey == "" {
 		errorResponse(w, http.StatusBadRequest, "Both buyer and seller public keys are required")
 		return
@@ -225,8 +251,23 @@ func (h *Handler) CancelContract(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Get the contract first to check permissions
+	contract, err := h.contractService.GetContract(r.Context(), contractID)
+	if err != nil {
+		errorResponse(w, http.StatusNotFound, "Contract not found")
+		return
+	}
+
+	// In a real implementation, check if the user has permission to cancel this contract
+	// For MVP, we'll skip detailed permission checks
+
 	err = h.contractService.CancelContract(r.Context(), contractID)
 	if err != nil {
+		if errors.Is(err, errors.New("contract cannot be cancelled")) {
+			errorResponse(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		
 		log.Error().Err(err).Str("contractID", id).Msg("Failed to cancel contract")
 		errorResponse(w, http.StatusInternalServerError, "Failed to cancel contract")
 		return
@@ -371,9 +412,16 @@ func (h *Handler) BroadcastTx(w http.ResponseWriter, r *http.Request) {
 		errorResponse(w, http.StatusBadRequest, "Transaction ID is required")
 		return
 	}
+	
+	// Parse the transaction ID
+	txID, err := uuid.Parse(req.TxID)
+	if err != nil {
+		errorResponse(w, http.StatusBadRequest, "Invalid transaction ID format")
+		return
+	}
 
 	// Broadcast the transaction
-	broadcastTxID, err := h.contractService.BroadcastTransaction(r.Context(), contractID, req.TxID)
+	broadcastTxID, err := h.contractService.BroadcastTransaction(r.Context(), contractID, txID)
 	if err != nil {
 		log.Error().Err(err).Str("contractID", id).Str("txID", req.TxID).Msg("Failed to broadcast transaction")
 		errorResponse(w, http.StatusInternalServerError, "Failed to broadcast transaction")
@@ -390,8 +438,9 @@ func (h *Handler) BroadcastTx(w http.ResponseWriter, r *http.Request) {
 
 // SwapContractParticipantRequest represents the request to swap a contract participant
 type SwapContractParticipantRequest struct {
-	OldPubKey string `json:"old_pub_key"`
-	NewPubKey string `json:"new_pub_key"`
+	CurrentPubKey      string `json:"current_pub_key"`
+	NewPubKey          string `json:"new_pub_key"`
+	NewParticipantInput string `json:"new_participant_input"`
 }
 
 // SwapContractParticipant handles swapping a contract participant
@@ -409,14 +458,41 @@ func (h *Handler) SwapContractParticipant(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	// Validate request
-	if req.OldPubKey == "" || req.NewPubKey == "" {
-		errorResponse(w, http.StatusBadRequest, "Both old and new public keys are required")
+	// Validate and sanitize request
+	req.CurrentPubKey = sanitizeInput(req.CurrentPubKey)
+	req.NewPubKey = sanitizeInput(req.NewPubKey)
+	
+	if req.CurrentPubKey == "" || req.NewPubKey == "" {
+		errorResponse(w, http.StatusBadRequest, "Both current and new public keys are required")
+		return
+	}
+	
+	if req.NewParticipantInput == "" {
+		errorResponse(w, http.StatusBadRequest, "New participant input is required")
+		return
+	}
+
+	// Get the contract to check permissions
+	contract, err := h.contractService.GetContract(r.Context(), contractID)
+	if err != nil {
+		errorResponse(w, http.StatusNotFound, "Contract not found")
+		return
+	}
+	
+	// Verify that the current public key belongs to one of the participants
+	if contract.BuyerPubKey != req.CurrentPubKey && contract.SellerPubKey != req.CurrentPubKey {
+		errorResponse(w, http.StatusBadRequest, "Current public key does not match any participant")
 		return
 	}
 
 	// Swap the participant
-	tx, err := h.contractService.SwapContractParticipant(r.Context(), contractID, req.OldPubKey, req.NewPubKey)
+	tx, err := h.contractService.SwapContractParticipant(
+		r.Context(), 
+		contractID, 
+		req.CurrentPubKey, 
+		req.NewPubKey,
+		req.NewParticipantInput,
+	)
 	if err != nil {
 		log.Error().Err(err).Str("contractID", id).Msg("Failed to swap contract participant")
 		errorResponse(w, http.StatusInternalServerError, "Failed to swap contract participant")
@@ -436,8 +512,18 @@ func (h *Handler) GetOrderBook(w http.ResponseWriter, r *http.Request) {
 	strikeHashRateStr := r.URL.Query().Get("strike_hash_rate")
 	limitStr := r.URL.Query().Get("limit")
 
+	if contractTypeStr == "" {
+		errorResponse(w, http.StatusBadRequest, "Contract type is required")
+		return
+	}
+	
+	if strikeHashRateStr == "" {
+		errorResponse(w, http.StatusBadRequest, "Strike hash rate is required")
+		return
+	}
+
 	var contractType models.ContractType
-	switch contractTypeStr {
+	switch strings.ToLower(contractTypeStr) {
 	case "call":
 		contractType = models.ContractTypeCall
 	case "put":
@@ -476,20 +562,21 @@ func (h *Handler) GetOrderBook(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// PlaceOrder handles creating a new order
+// PlaceOrderRequest represents the request to place a new order
 type PlaceOrderRequest struct {
-	UserID          string  `json:"user_id"`
-	Side            string  `json:"side"`
-	ContractType    string  `json:"contract_type"`
-	StrikeHashRate  float64 `json:"strike_hash_rate"`
+	UserID           string  `json:"user_id"`
+	Side             string  `json:"side"`
+	ContractType     string  `json:"contract_type"`
+	StrikeHashRate   float64 `json:"strike_hash_rate"`
 	StartBlockHeight int64   `json:"start_block_height"`
-	EndBlockHeight  int64   `json:"end_block_height"`
-	Price           int64   `json:"price"`
-	Quantity        int     `json:"quantity"`
-	PubKey          string  `json:"pub_key"`
-	ExpiresIn       *int    `json:"expires_in,omitempty"` // Optional: minutes until expiration
+	EndBlockHeight   int64   `json:"end_block_height"`
+	Price            int64   `json:"price"`
+	Quantity         int     `json:"quantity"`
+	PubKey           string  `json:"pub_key"`
+	ExpiresIn        *int    `json:"expires_in,omitempty"` // Optional: minutes until expiration
 }
 
+// PlaceOrder handles creating a new order
 func (h *Handler) PlaceOrder(w http.ResponseWriter, r *http.Request) {
 	var req PlaceOrderRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -497,14 +584,30 @@ func (h *Handler) PlaceOrder(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Validate request
-	if req.UserID == "" || req.PubKey == "" {
-		errorResponse(w, http.StatusBadRequest, "User ID and pub key are required")
+	// Validate and sanitize request
+	if req.UserID == "" {
+		errorResponse(w, http.StatusBadRequest, "User ID is required")
+		return
+	}
+
+	req.PubKey = sanitizeInput(req.PubKey)
+	if req.PubKey == "" {
+		errorResponse(w, http.StatusBadRequest, "Public key is required")
 		return
 	}
 
 	if req.StrikeHashRate <= 0 {
 		errorResponse(w, http.StatusBadRequest, "Strike hash rate must be positive")
+		return
+	}
+
+	if req.StartBlockHeight <= 0 {
+		errorResponse(w, http.StatusBadRequest, "Start block height must be positive")
+		return
+	}
+
+	if req.EndBlockHeight <= req.StartBlockHeight {
+		errorResponse(w, http.StatusBadRequest, "End block height must be greater than start block height")
 		return
 	}
 
@@ -526,7 +629,7 @@ func (h *Handler) PlaceOrder(w http.ResponseWriter, r *http.Request) {
 
 	// Determine side
 	var side models.OrderSide
-	switch req.Side {
+	switch strings.ToLower(req.Side) {
 	case "buy":
 		side = models.OrderSideBuy
 	case "sell":
@@ -538,7 +641,7 @@ func (h *Handler) PlaceOrder(w http.ResponseWriter, r *http.Request) {
 
 	// Determine contract type
 	var contractType models.ContractType
-	switch req.ContractType {
+	switch strings.ToLower(req.ContractType) {
 	case "call":
 		contractType = models.ContractTypeCall
 	case "put":
@@ -570,6 +673,7 @@ func (h *Handler) PlaceOrder(w http.ResponseWriter, r *http.Request) {
 	// Place the order
 	placedOrder, err := h.orderBook.PlaceOrder(r.Context(), order)
 	if err != nil {
+		log.Error().Err(err).Msg("Failed to place order")
 		errorResponse(w, http.StatusInternalServerError, "Failed to place order")
 		return
 	}
@@ -589,38 +693,26 @@ func (h *Handler) CancelOrder(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Get the order to check permissions
+	order, err := h.orderBook.GetOrderByID(r.Context(), orderID)
+	if err != nil {
+		errorResponse(w, http.StatusNotFound, "Order not found")
+		return
+	}
+
+	// In a real implementation, check if the user has permission to cancel this order
+	// For MVP, we'll skip detailed permission checks
+
 	err = h.orderBook.CancelOrder(r.Context(), orderID)
 	if err != nil {
+		log.Error().Err(err).Str("orderID", id).Msg("Failed to cancel order")
 		errorResponse(w, http.StatusInternalServerError, "Failed to cancel order")
 		return
 	}
 
 	respondJSON(w, http.StatusOK, response{
 		Success: true,
-	})
-}
-
-// SettleContract handles contract settlement
-func (h *Handler) SettleContract(w http.ResponseWriter, r *http.Request) {
-	id := chi.URLParam(r, "id")
-	contractID, err := uuid.Parse(id)
-	if err != nil {
-		errorResponse(w, http.StatusBadRequest, "Invalid contract ID")
-		return
-	}
-
-	tx, buyerWins, err := h.contractService.SettleContract(r.Context(), contractID)
-	if err != nil {
-		errorResponse(w, http.StatusInternalServerError, "Failed to settle contract")
-		return
-	}
-
-	respondJSON(w, http.StatusOK, response{
-		Success: true,
-		Data: map[string]interface{}{
-			"transaction": tx,
-			"buyer_wins":  buyerWins,
-		},
+		Data:    "Order cancelled successfully",
 	})
 }
 
@@ -657,6 +749,7 @@ func (h *Handler) GetUserOrders(w http.ResponseWriter, r *http.Request) {
 
 	orders, err := h.orderBook.ListUserOrders(r.Context(), userID, limit, offset)
 	if err != nil {
+		log.Error().Err(err).Str("userID", id).Msg("Failed to get user orders")
 		errorResponse(w, http.StatusInternalServerError, "Failed to get user orders")
 		return
 	}

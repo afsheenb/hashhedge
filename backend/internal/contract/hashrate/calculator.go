@@ -11,6 +11,9 @@ import (
 	"hashhedge/pkg/bitcoin"
 )
 
+// HashRate represents the Bitcoin network hash rate in EH/s
+type HashRate float64
+
 // HashRateCalculator calculates the current Bitcoin network hash rate
 type HashRateCalculator struct {
 	client *bitcoin.Client
@@ -24,7 +27,7 @@ type HashRateCalculator struct {
 // New creates a new HashRateCalculator
 func New(client *bitcoin.Client) *HashRateCalculator {
 	return &HashRateCalculator{
-		client:       client,
+		client:        client,
 		cacheDuration: time.Minute * 5, // Default 5 minute cache
 	}
 }
@@ -42,7 +45,7 @@ func (c *HashRateCalculator) CalculateCurrentHashRate(ctx context.Context) (floa
 	if c.lastCalculation != nil && time.Since(c.lastCalcTime) < c.cacheDuration {
 		result := *c.lastCalculation
 		c.cacheMutex.RUnlock()
-		return result, nil
+		return float64(result), nil
 	}
 	c.cacheMutex.RUnlock()
 
@@ -72,11 +75,12 @@ func (c *HashRateCalculator) CalculateCurrentHashRate(ctx context.Context) (floa
 
 	// Calculate hash rate: (difficulty * 2^32) / (time * 10^12)
 	// This converts to exahashes per second (EH/s)
-	hashRate := (float64(bestBlock.Difficulty) * math.Pow(2, 32)) / (timeDiff * 1e12)
+	hashRate := (bestBlock.Difficulty * math.Pow(2, 32)) / (timeDiff * 1e12)
 
 	// Update cache
 	c.cacheMutex.Lock()
-	c.lastCalculation = &hashRate
+	hashRateValue := HashRate(hashRate)
+	c.lastCalculation = &hashRateValue
 	c.lastCalcTime = time.Now()
 	c.cacheMutex.Unlock()
 

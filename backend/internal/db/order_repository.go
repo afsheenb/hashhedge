@@ -1,4 +1,3 @@
-
 // internal/db/order_repository.go
 package db
 
@@ -172,6 +171,25 @@ func (r *OrderRepository) ListOpenOrders(
 	return orders, nil
 }
 
+// ListAllOpenOrders retrieves all open orders regardless of parameters
+func (r *OrderRepository) ListAllOpenOrders(ctx context.Context) ([]*models.Order, error) {
+	var orders []*models.Order
+
+	query := `
+		SELECT * FROM orders
+		WHERE (status = 'OPEN' OR status = 'PARTIAL')
+		AND (expires_at IS NULL OR expires_at > NOW())
+		ORDER BY created_at
+	`
+
+	err := r.db.SelectContext(ctx, &orders, query)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list all open orders: %w", err)
+	}
+
+	return orders, nil
+}
+
 // ListUserOrders retrieves orders for a specific user
 func (r *OrderRepository) ListUserOrders(ctx context.Context, userID uuid.UUID, limit, offset int) ([]*models.Order, error) {
 	var orders []*models.Order
@@ -213,4 +231,4 @@ func (r *OrderRepository) CancelExpiredOrders(ctx context.Context) (int64, error
 	}
 
 	return affected, nil
-}
+}height = :start_block_

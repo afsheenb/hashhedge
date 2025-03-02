@@ -2,6 +2,7 @@ package bitcoin
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"time"
@@ -9,6 +10,7 @@ import (
 	"github.com/btcsuite/btcd/btcjson"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/rpcclient"
+	"github.com/btcsuite/btcd/wire"
 )
 
 // Block represents a Bitcoin block with the information we need
@@ -112,9 +114,61 @@ func (c *Client) GetRawTransaction(ctx context.Context, txID string) (string, er
 	return tx.String(), nil
 }
 
+// GetRawTransactionVerbose retrieves detailed information about a transaction
+func (c *Client) GetRawTransactionVerbose(ctx context.Context, txHash *chainhash.Hash) (*btcjson.TxRawResult, error) {
+	tx, err := c.rpcClient.GetRawTransactionVerboseAsync(txHash).Receive()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get verbose transaction %s: %w", txHash.String(), err)
+	}
+	
+	return tx, nil
+}
+
+// GetBlockHeaderVerbose retrieves detailed information about a block header
+func (c *Client) GetBlockHeaderVerbose(ctx context.Context, blockHash *chainhash.Hash) (*btcjson.GetBlockHeaderVerboseResult, error) {
+	header, err := c.rpcClient.GetBlockHeaderVerboseAsync(blockHash).Receive()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get block header %s: %w", blockHash.String(), err)
+	}
+	
+	return header, nil
+}
+
+// GetBlockCount returns the current block height
+func (c *Client) GetBlockCount(ctx context.Context) (int64, error) {
+	count, err := c.rpcClient.GetBlockCountAsync().Receive()
+	if err != nil {
+		return 0, fmt.Errorf("failed to get block count: %w", err)
+	}
+	
+	return count, nil
+}
+
+// SendRawTransaction broadcasts a raw transaction to the network
+func (c *Client) SendRawTransaction(ctx context.Context, tx *wire.MsgTx, allowHighFees bool) (*chainhash.Hash, error) {
+	txHash, err := c.rpcClient.SendRawTransactionAsync(tx, allowHighFees).Receive()
+	if err != nil {
+		return nil, fmt.Errorf("failed to broadcast transaction: %w", err)
+	}
+	
+	return txHash, nil
+}
+
 // BroadcastTransaction broadcasts a raw transaction to the network
 func (c *Client) BroadcastTransaction(ctx context.Context, txHex string) (string, error) {
-	txHash, err := c.rpcClient.SendRawTransactionAsync(txHex).Receive()
+	// Decode the transaction hex
+	txBytes, err := hex.DecodeString(txHex)
+	if err != nil {
+		return "", fmt.Errorf("failed to decode transaction hex: %w", err)
+	}
+
+	// Deserialize the transaction
+	var tx wire.MsgTx
+	if err := tx.Deserialize(hex.NewDecoder(txBytes)); err != nil {
+		return "", fmt.Errorf("failed to deserialize transaction: %w", err)
+	}
+
+	txHash, err := c.rpcClient.SendRawTransactionAsync(&tx, false).Receive()
 	if err != nil {
 		return "", fmt.Errorf("failed to broadcast transaction: %w", err)
 	}
@@ -130,4 +184,23 @@ func (c *Client) GetBlockchainInfo(ctx context.Context) (*btcjson.GetBlockChainI
 	}
 
 	return info, nil
+}
+
+// EstimateFee estimates the fee for a transaction with the given number of inputs and outputs
+func (c *Client) EstimateFee(ctx context.Context, numInputs, numOutputs int, feeRate float64) (int64, error) {
+	// Estimate transaction size
+	// P2PKH input: ~148 bytes, P2PKH output: ~34 bytes
+	// Add 10 bytes for version, locktime, etc.
+	txSize := 10 + (numInputs * 148) + (numOutputs * 34)
+	
+	// Calculate fee based on size and fee rate (satoshis per byte)
+	fee := int64(float64(txSize) * feeRate)
+	
+	// Ensure minimum relay fee (typically 1000 satoshis)
+	minFee := int64(1000)
+	if fee < minFee {
+		fee = minFee
+	}
+	
+	return fee, nil
 }

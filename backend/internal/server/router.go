@@ -1,9 +1,9 @@
-
 // internal/server/router.go
 package server
 
 import (
 	"net/http"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
@@ -19,6 +19,7 @@ func NewRouter(h *Handler) http.Handler {
 	r.Use(middleware.RealIP)
 	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)
+	r.Use(middleware.Timeout(60 * time.Second))
 
 	// CORS middleware
 	r.Use(cors.Handler(cors.Options{
@@ -34,8 +35,15 @@ func NewRouter(h *Handler) http.Handler {
 	r.Route("/api/v1", func(r chi.Router) {
 		// Contract routes
 		r.Route("/contracts", func(r chi.Router) {
+			r.Get("/", h.ListActiveContracts)
+			r.Post("/", h.CreateContract)
 			r.Get("/{id}", h.GetContract)
+			r.Post("/{id}/setup", h.SetupContract)
+			r.Post("/{id}/final", h.GenerateFinalTx)
 			r.Post("/{id}/settle", h.SettleContract)
+			r.Post("/{id}/broadcast", h.BroadcastTx)
+			r.Post("/{id}/swap", h.SwapContractParticipant)
+			r.Delete("/{id}", h.CancelContract)
 		})
 
 		// Order routes
@@ -47,6 +55,12 @@ func NewRouter(h *Handler) http.Handler {
 
 		// Order book routes
 		r.Get("/orderbook", h.GetOrderBook)
+	})
+
+	// Health check endpoint
+	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("OK"))
 	})
 
 	return r
