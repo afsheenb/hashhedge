@@ -1,4 +1,3 @@
-// src/components/orderbook/OrderProcessFlow.tsx
 import React, { useState, useEffect } from 'react';
 import {
   Box,
@@ -14,7 +13,6 @@ import {
   Divider,
   Progress,
   Badge,
-  Collapse,
   useDisclosure,
   Modal,
   ModalOverlay,
@@ -25,11 +23,6 @@ import {
   ModalFooter,
   useToast,
   useColorMode,
-  Tabs,
-  TabList,
-  TabPanels,
-  Tab,
-  TabPanel,
   Step,
   StepDescription,
   StepIcon,
@@ -57,12 +50,9 @@ import {
 } from '../../store/hash-rate-slice';
 import PlaceOrderForm from './PlaceOrderForm';
 import OrderBookDisplay from './OrderBookDisplay';
-import OrderTable from './OrderTable';
 import {
   Order,
   OrderSide,
-  OrderBook,
-  Trade,
   PlaceOrderForm as PlaceOrderFormType,
 } from '../../types';
 
@@ -80,6 +70,16 @@ interface OrderProcessFlowProps {
   initialOrderSide?: 'buy' | 'sell';
   onOrderComplete?: (order: Order) => void;
 }
+
+// Error handling utility function to standardize error messages
+const getErrorMessage = (error: unknown): string => {
+  if (error instanceof Error) {
+    return error.message;
+  } else if (typeof error === 'string') {
+    return error;
+  }
+  return 'Unknown error occurred';
+};
 
 const OrderProcessFlow: React.FC<OrderProcessFlowProps> = ({
   contractType = 'call',
@@ -104,7 +104,7 @@ const OrderProcessFlow: React.FC<OrderProcessFlowProps> = ({
   const toast = useToast();
   const { colorMode } = useColorMode();
   
-  const { orderBook, userOrders, trades, loading: ordersLoading } = useAppSelector((state) => state.orders);
+  const { orderBook, userOrders, loading: ordersLoading } = useAppSelector((state) => state.orders);
   const { currentHashRate, loading: hashRateLoading } = useAppSelector((state) => state.hashRate);
   const { isConnected, balance } = useAppSelector((state) => state.arkWallet);
   const { user } = useAppSelector((state) => state.auth);
@@ -117,32 +117,52 @@ const OrderProcessFlow: React.FC<OrderProcessFlowProps> = ({
   
   // Initialize with data
   useEffect(() => {
+    let isMounted = true;
     const fetchInitialData = async () => {
       setIsProcessing(true);
       setStepProgress(20);
       
       try {
-        // Fetch current hash rate if strike hasn't been specified
-        if (!currentStrikeHashRate) {
-          await dispatch(fetchCurrentHashRate()).unwrap();
-          setCurrentStrikeHashRate(currentHashRate);
+        // First make sure we have a valid strike hash rate
+        let effectiveStrikeHashRate = currentStrikeHashRate;
+        
+        if (!effectiveStrikeHashRate) {
+          try {
+            const hashRateResult = await dispatch(fetchCurrentHashRate()).unwrap();
+            
+            // Only update if component is still mounted
+            if (isMounted && hashRateResult) {
+              setCurrentStrikeHashRate(hashRateResult);
+              effectiveStrikeHashRate = hashRateResult;
+            }
+          } catch (error) {
+            console.error("Failed to fetch hash rate:", error);
+            // Default to a reasonable value if we couldn't get the current rate
+            effectiveStrikeHashRate = 350; // Default value
+            if (isMounted) {
+              setCurrentStrikeHashRate(effectiveStrikeHashRate);
+            }
+          }
         }
         
+        if (!isMounted) return;
         setStepProgress(40);
         
         // Fetch hash rate summary for reference
         await dispatch(fetchHashRateSummary()).unwrap();
         
+        if (!isMounted) return;
         setStepProgress(60);
         
-        // Fetch current order book
-        if (currentStrikeHashRate) {
+        // Use the effective strike hash rate we've determined
+        if (effectiveStrikeHashRate) {
           await dispatch(getOrderBook({
             contractType: contractType.toLowerCase(),
-            strikeHashRate: currentStrikeHashRate,
+            strikeHashRate: effectiveStrikeHashRate,
           })).unwrap();
         }
         
+        if (!isMounted) return;
         setStepProgress(80);
         
         // Fetch user orders if authenticated
@@ -153,18 +173,28 @@ const OrderProcessFlow: React.FC<OrderProcessFlowProps> = ({
         // Fetch recent trades
         await dispatch(getRecentTrades()).unwrap();
         
+        if (!isMounted) return;
         setStepProgress(100);
       } catch (err) {
-        setError(`Failed to load initial data: ${err.message || err}`);
-        openErrorModal();
+        if (isMounted) {
+          setError(`Failed to load initial data: ${getErrorMessage(err)}`);
+          openErrorModal();
+        }
       } finally {
-        setIsProcessing(false);
-        setStepProgress(0);
+        if (isMounted) {
+          setIsProcessing(false);
+          setStepProgress(0);
+        }
       }
     };
     
     fetchInitialData();
-  }, [dispatch, contractType, currentStrikeHashRate, currentHashRate, user, openErrorModal]);
+    
+    // Cleanup function to prevent state updates after unmount
+    return () => {
+      isMounted = false;
+    };
+  }, [dispatch, contractType, user, openErrorModal]);
   
   // Handle order book refresh
   const handleRefreshOrderBook = async () => {
@@ -187,7 +217,7 @@ const OrderProcessFlow: React.FC<OrderProcessFlowProps> = ({
     } catch (err) {
       toast({
         title: 'Failed to refresh order book',
-        description: err.message || 'Unknown error',
+        description: getErrorMessage(err),
         status: 'error',
         duration: 3000,
         isClosable: true,
@@ -204,125 +234,119 @@ const OrderProcessFlow: React.FC<OrderProcessFlowProps> = ({
     setActiveStep(1); // Move to place order step
   };
   
-  
-const handlePlaceOrder = async (formData: PlaceOrderFormType) => {
-  if (!isConnected) {
-    toast({
-      title: 'Wallet not connected',
-      description: 'Please connect your wallet to place orders',
-      status: 'warning',
-      duration: 5000,
-      isClosable: true,
-    });
-    return;
-  }
-
-  // Additional validation for wallet balance
-  if (formData.side === 'buy') {
-    const totalCost = formData.price * formData.quantity;
-    if (balance && totalCost > balance.available) {
+  // Handle placing an order
+  const handlePlaceOrder = async (formData: PlaceOrderFormType) => {
+    if (!isConnected) {
       toast({
-        title: 'Insufficient balance',
-        description: `You need ${totalCost.toLocaleString()} sats, but only have ${balance.available.toLocaleString()} available`,
-        status: 'error',
+        title: 'Wallet not connected',
+        description: 'Please connect your wallet to place orders',
+        status: 'warning',
         duration: 5000,
         isClosable: true,
       });
       return;
     }
-  }
 
-  setIsProcessing(true);
-  setStepProgress(20);
-  setError(null);
-
-  try {
-    // Validate user ID is present
-    if (!user?.id) {
-      throw new Error('User ID is required for placing orders');
+    // Additional validation for wallet balance
+    if (formData.side === 'buy') {
+      const totalCost = formData.price * formData.quantity;
+      if (balance && totalCost > balance.available) {
+        toast({
+          title: 'Insufficient balance',
+          description: `You need ${totalCost.toLocaleString()} sats, but only have ${balance.available.toLocaleString()} available`,
+          status: 'error',
+          duration: 5000,
+          isClosable: true,
+        });
+        return;
+      }
     }
 
-    // Add user ID to form data
-    const completeFormData = {
-      ...formData,
-      user_id: user.id,
-    };
+    setIsProcessing(true);
+    setStepProgress(20);
+    setError(null);
 
-    setStepProgress(50);
+    try {
+      // Validate user ID is present
+      if (!user?.id) {
+        throw new Error('User ID is required for placing orders');
+      }
 
-    // Submit the order
-    const order = await dispatch(placeOrder(completeFormData)).unwrap();
+      // Add user ID to form data
+      const completeFormData = {
+        ...formData,
+        user_id: user.id,
+      };
 
-    if (!order) {
-      throw new Error('Failed to place order: No response received');
+      setStepProgress(50);
+
+      // Submit the order
+      const order = await dispatch(placeOrder(completeFormData)).unwrap();
+
+      if (!order) {
+        throw new Error('Failed to place order: No response received');
+      }
+
+      setSubmittedOrder(order);
+      setStepProgress(80);
+
+      // Refresh data after order placement
+      await refreshDataAfterOrderPlacement(formData, user.id);
+
+      setStepProgress(100);
+
+      toast({
+        title: 'Order placed successfully',
+        description: `Your ${formData.side} order for ${formData.quantity} contracts has been placed`,
+        status: 'success',
+        duration: 5000,
+        isClosable: true,
+      });
+
+      // Move to the next step
+      setActiveStep(3); // Skip to monitor step
+    } catch (err) {
+      const errorMessage = getErrorMessage(err);
+      setError(`Failed to place order: ${errorMessage}`);
+      openErrorModal();
+
+      toast({
+        title: 'Order placement failed',
+        description: errorMessage,
+        status: 'error',
+        duration: 5000,
+        isClosable: true,
+      });
+    } finally {
+      setIsProcessing(false);
+      setStepProgress(0);
     }
+  };
 
-    setSubmittedOrder(order);
-    setStepProgress(80);
-
-    // Refresh order book and user orders with better error handling
+  // Handle refreshing data after order placement
+  const refreshDataAfterOrderPlacement = async (formData: PlaceOrderFormType, userId: string) => {
     try {
       await Promise.all([
         dispatch(getOrderBook({
           contractType: formData.contract_type.toLowerCase(),
           strikeHashRate: formData.strike_hash_rate,
         })),
-        dispatch(getUserOrders({ userId: user.id })),
+        dispatch(getUserOrders({ userId })),
+        dispatch(fetchWalletBalance())
       ]);
-    } catch (refreshError) {
-      // Non-critical error - log but don't throw
-      console.error('Failed to refresh data after order placement:', refreshError);
+    } catch (error) {
+      // Log but don't throw - this is non-critical
+      console.error('Error refreshing data after order placement:', error);
       toast({
         title: 'Warning',
         description: 'Order placed successfully, but failed to refresh data',
         status: 'warning',
-        duration: 5000,
+        duration: 3000,
         isClosable: true,
       });
     }
-
-    // Refresh wallet balance
-    try {
-      await dispatch(fetchWalletBalance());
-    } catch (walletError) {
-      // Non-critical error - log but don't throw
-      console.error('Failed to refresh wallet balance:', walletError);
-    }
-
-    setStepProgress(100);
-
-    toast({
-      title: 'Order placed successfully',
-      description: `Your ${formData.side} order for ${formData.quantity} contracts has been placed`,
-      status: 'success',
-      duration: 5000,
-      isClosable: true,
-    });
-
-    // Move to the next step
-    setActiveStep(3); // Skip to monitor step
-  } catch (err) {
-    const errorMessage = err instanceof Error
-      ? err.message
-      : typeof err === 'string'
-        ? err
-        : 'Unknown error occurred';
-
-    setError(`Failed to place order: ${errorMessage}`);
-    openErrorModal();
-
-    toast({
-      title: 'Order placement failed',
-      description: errorMessage,
-      status: 'error',
-      duration: 5000,
-      isClosable: true,
-    });
-  } finally {
-    setIsProcessing(false);
-    setStepProgress(0);
-  }
-};
+  };
+  
   // Handle order cancellation
   const handleCancelOrder = async (orderId: string) => {
     setIsProcessing(true);
@@ -340,14 +364,13 @@ const handlePlaceOrder = async (formData: PlaceOrderFormType) => {
       
       // Refresh user orders and order book
       if (user) {
-        await dispatch(getUserOrders({ userId: user.id })).unwrap();
-      }
-      
-      if (currentStrikeHashRate) {
-        await dispatch(getOrderBook({
-          contractType: contractType.toLowerCase(),
-          strikeHashRate: currentStrikeHashRate,
-        })).unwrap();
+        await Promise.all([
+          dispatch(getUserOrders({ userId: user.id })),
+          dispatch(getOrderBook({
+            contractType: contractType.toLowerCase(),
+            strikeHashRate: currentStrikeHashRate || 0,
+          }))
+        ]);
       }
       
       // Clear submitted order if it was cancelled
@@ -357,7 +380,7 @@ const handlePlaceOrder = async (formData: PlaceOrderFormType) => {
     } catch (err) {
       toast({
         title: 'Error',
-        description: err.message || 'Failed to cancel order',
+        description: getErrorMessage(err),
         status: 'error',
         duration: 5000,
         isClosable: true,
@@ -543,7 +566,15 @@ const handlePlaceOrder = async (formData: PlaceOrderFormType) => {
               
               <Button
                 colorScheme="green"
-                onClick={handlePlaceOrder}
+                onClick={() => handlePlaceOrder({
+                  side: selectedOrderSide,
+                  contract_type: contractType,
+                  strike_hash_rate: currentStrikeHashRate || 0,
+                  price: selectedOrder?.price || 0,
+                  quantity: selectedOrder?.remaining_quantity || 1,
+                  start_block_height: 0, // These would be populated from form data
+                  end_block_height: 0,   // These would be populated from form data
+                })}
                 isLoading={isProcessing}
                 loadingText="Submitting"
               >

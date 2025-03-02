@@ -70,6 +70,7 @@ const PlaceOrderForm: React.FC<PlaceOrderFormProps> = ({
   const [expiryMinutes, setExpiryMinutes] = useState(60);
   const [priceSlider, setPriceSlider] = useState(50);
   const [currentHashRate, setCurrentHashRate] = useState<number | null>(null);
+  const [initialHashRateLoading, setInitialHashRateLoading] = useState(true);
   const [isLoadingHashRate, setIsLoadingHashRate] = useState(false);
   
   const { user } = useAppSelector((state) => state.auth);
@@ -95,6 +96,59 @@ const PlaceOrderForm: React.FC<PlaceOrderFormProps> = ({
   const watchQuantity = watch('quantity');
   const watchPrice = watch('price');
   
+  useEffect(() => {
+  let mounted = true;
+  let retryCount = 0;
+  const MAX_RETRIES = 3;
+
+  const fetchHashRate = async () => {
+    setInitialHashRateLoading(true);
+
+    try {
+      const response = await bitcoinService.getCurrentHashRate();
+
+      if (!mounted) return;
+
+      if (response.success && response.data) {
+        setCurrentHashRate(response.data);
+
+        // Set default strike hash rate to current hash rate if not already provided
+        if (!defaultStrikeHashRate && mounted) {
+          setValue('strike_hash_rate', response.data);
+        }
+
+        // Fetching succeeded, so exit retry loop
+        retryCount = MAX_RETRIES;
+      } else if (retryCount < MAX_RETRIES) {
+        // If the response wasn't successful, retry after a delay
+        retryCount++;
+        setTimeout(fetchHashRate, 1000); // Retry after 1 second
+      }
+    } catch (error) {
+      console.error('Failed to fetch current hash rate:', error);
+
+      if (mounted && retryCount < MAX_RETRIES) {
+        // If there was an error, retry after a delay
+        retryCount++;
+        setTimeout(fetchHashRate, 1000); // Retry after 1 second
+      }
+    } finally {
+      if (mounted) {
+        setInitialHashRateLoading(false);
+      }
+    }
+  };
+
+  // Start the fetch process
+  fetchHashRate();
+
+  // Cleanup function
+  return () => {
+    mounted = false;
+  };
+}, [setValue, defaultStrikeHashRate]);
+
+
   // Fetch current hash rate on component mount
   useEffect(() => {
     const fetchCurrentHashRate = async () => {

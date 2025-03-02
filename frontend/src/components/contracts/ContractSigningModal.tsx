@@ -47,6 +47,7 @@ const ContractSigningModal: React.FC<ContractSigningModalProps> = ({
   const [signedTx, setSignedTx] = useState<string | null>(null);
   const [txid, setTxid] = useState<string | null>(null);
   const [signingStep, setSigningStep] = useState<number>(0);
+  const [error, setError] = useState<string | null>(null);
   
   const toast = useToast();
   const dispatch = useAppDispatch();
@@ -55,22 +56,40 @@ const ContractSigningModal: React.FC<ContractSigningModalProps> = ({
   
   // Reset state when modal is opened with a new transaction
   useEffect(() => {
-    if (isOpen && transaction) {
+    if (isOpen) {
       setSignedTx(null);
       setTxid(null);
       setSigningStep(0);
+      setError(null);
     }
   }, [isOpen, transaction]);
   
+  // Validate transaction before signing
+  const validateTransaction = (): boolean => {
+    if (!transaction) {
+      setError("No transaction data available");
+      return false;
+    }
+    
+    if (!transaction.tx_hex || transaction.tx_hex.trim() === '') {
+      setError("Transaction data is missing or empty");
+      return false;
+    }
+    
+    if (!transaction.id || !transaction.contract_id) {
+      setError("Transaction ID or contract ID is missing");
+      return false;
+    }
+    
+    return true;
+  };
+  
   const handleSignTransaction = async () => {
-    if (!transaction || !transaction.tx_hex) {
-      toast({
-        title: 'Error',
-        description: 'No transaction data available to sign',
-        status: 'error',
-        duration: 5000,
-        isClosable: true,
-      });
+    // Clear any previous errors
+    setError(null);
+    
+    // Validate the transaction
+    if (!validateTransaction()) {
       return;
     }
     
@@ -79,9 +98,13 @@ const ContractSigningModal: React.FC<ContractSigningModalProps> = ({
     try {
       // Sign the transaction using the wallet
       const signed = await dispatch(signTransaction({
-        txHex: transaction.tx_hex,
+        txHex: transaction!.tx_hex,
         contractId: contract.id
       })).unwrap();
+      
+      if (!signed) {
+        throw new Error("Signing returned empty result");
+      }
       
       setSignedTx(signed);
       setSigningStep(2); // Signing completed
@@ -95,9 +118,12 @@ const ContractSigningModal: React.FC<ContractSigningModalProps> = ({
       });
     } catch (error) {
       setSigningStep(0);
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error occurred';
+      setError(`Signing failed: ${errorMessage}`);
+      
       toast({
         title: 'Signing failed',
-        description: error instanceof Error ? error.message : 'Unknown error occurred',
+        description: errorMessage,
         status: 'error',
         duration: 5000,
         isClosable: true,
@@ -106,14 +132,12 @@ const ContractSigningModal: React.FC<ContractSigningModalProps> = ({
   };
   
   const handleBroadcastTransaction = async () => {
+    // Clear any previous errors
+    setError(null);
+    
+    // Validate signed transaction
     if (!signedTx || !transaction) {
-      toast({
-        title: 'Error',
-        description: 'No signed transaction to broadcast',
-        status: 'error',
-        duration: 5000,
-        isClosable: true,
-      });
+      setError("No signed transaction to broadcast");
       return;
     }
     
@@ -125,31 +149,39 @@ const ContractSigningModal: React.FC<ContractSigningModalProps> = ({
         txHex: signedTx
       })).unwrap();
       
+      if (!broadcastResult) {
+        throw new Error("Broadcasting returned empty result");
+      }
+      
       // Then notify the contract system of the broadcast
       const contractResult = await dispatch(broadcastTx({
         contractId: contract.id,
         txId: transaction.id
       })).unwrap();
       
+      if (!contractResult) {
+        // Non-critical error as the transaction is already broadcast
+        console.warn("Contract system notification failed but transaction was broadcast");
+      }
+      
       setTxid(broadcastResult);
       setSigningStep(4); // Broadcast completed
       
       toast({
         title: 'Transaction broadcast',
-        description: `Transaction successfully broadcast to the network with ID: ${broadcastResult.substring(0, 8)}...`,
+        description: `Transaction successfully broadcast with ID: ${broadcastResult.substring(0, 8)}...`,
         status: 'success',
         duration: 5000,
         isClosable: true,
       });
-      
-      if (onSuccess) {
-        onSuccess();
-      }
     } catch (error) {
       setSigningStep(2); // Revert to signed state
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error occurred';
+      setError(`Broadcast failed: ${errorMessage}`);
+      
       toast({
         title: 'Broadcast failed',
-        description: error instanceof Error ? error.message : 'Unknown error occurred',
+        description: errorMessage,
         status: 'error',
         duration: 5000,
         isClosable: true,
@@ -158,7 +190,7 @@ const ContractSigningModal: React.FC<ContractSigningModalProps> = ({
   };
   
   const handleClose = () => {
-    // Reset state when modal is closed if transaction was broadcast
+    // If transaction was successfully broadcast and there's a success callback, call it
     if (txid && onSuccess) {
       onSuccess();
     }
@@ -294,6 +326,13 @@ const ContractSigningModal: React.FC<ContractSigningModalProps> = ({
                   </Alert>
                 )}
                 
+                {error && (
+                  <Alert status="error">
+                    <AlertIcon />
+                    <Text>{error}</Text>
+                  </Alert>
+                )}
+                
                 {renderStepIndicator()}
                 
                 <Divider />
@@ -381,9 +420,9 @@ const ContractSigningModal: React.FC<ContractSigningModalProps> = ({
             <Button
               colorScheme="blue"
               onClick={handleSignTransaction}
-              isLoading={signingStep === 1}
+              isLoading={signingStep === 1 || walletLoading}
               loadingText="Signing"
-              isDisabled={!isConnected || !transaction?.tx_hex || signingStep === 1}
+              isDisabled={!isConnected || !transaction?.tx_hex || signingStep === 1 || !!error}
               leftIcon={<CheckIcon />}
             >
               Sign Transaction
@@ -392,9 +431,9 @@ const ContractSigningModal: React.FC<ContractSigningModalProps> = ({
             <Button
               colorScheme="green"
               onClick={handleBroadcastTransaction}
-              isLoading={signingStep === 3}
+              isLoading={signingStep === 3 || walletLoading}
               loadingText="Broadcasting"
-              isDisabled={!isConnected || !signedTx || signingStep === 3}
+              isDisabled={!isConnected || !signedTx || signingStep === 3 || !!error}
             >
               Broadcast Transaction
             </Button>
