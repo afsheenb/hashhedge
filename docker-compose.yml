@@ -1,0 +1,84 @@
+version: '3.8'
+
+services:
+  traefik:
+    image: traefik:v2.10
+    container_name: ${PROJECT_NAME}-webserver
+    command:
+      - "--providers.docker=true"
+      - "--providers.docker.exposedbydefault=false"
+      - "--entrypoints.web.address=:80"
+      - "--entrypoints.websecure.address=:443"
+      - "--certificatesresolvers.le.acme.email=your-email@example.com"
+      - "--certificatesresolvers.le.acme.storage=/letsencrypt/acme.json"
+      - "--certificatesresolvers.le.acme.tlschallenge=true"
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - "/var/run/docker.sock:/var/run/docker.sock:ro"
+      - "./letsencrypt:/letsencrypt"
+    networks:
+      - hashhedge-network
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile.frontend  # We'll create a production Dockerfile
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.frontend.rule=Host(`hashhedge.com`)"
+      - "traefik.http.routers.frontend.entrypoints=websecure"
+      - "traefik.http.routers.frontend.tls.certresolver=le"
+    networks:
+      - hashhedge-network
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.backend
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.backend.rule=Host(`api.hashhedge.com`)"
+      - "traefik.http.routers.backend.entrypoints=websecure"
+      - "traefik.http.routers.backend.tls.certresolver=le"
+    networks:
+      - hashhedge-network
+
+  postgres:
+    container_name: ${PROJECT_NAME}-db
+    image: postgres:13
+    environment:
+      - POSTGRES_USER=hashhedge
+      - POSTGRES_PASSWORD=hashhedge_secret
+      - POSTGRES_DB=hashhedge
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./backend/migrations:/docker-entrypoint-initdb.d
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U hashhedge"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    networks:
+      - hashhedge-network
+    restart: unless-stopped
+
+  bitcoin-node:
+    image: ruimarinho/bitcoin-core:latest
+    container_name: ${PROJECT_NAME}-bitcoin-node
+    volumes:
+      - bitcoin-data:/home/bitcoin/.bitcoin
+    networks:
+      - hashhedge-network
+
+networks:
+  hashhedge-network:
+    driver: bridge
+
+volumes:
+  postgres-data:
+  bitcoin-data:
