@@ -1,4 +1,4 @@
-
+// src/components/orderbook/PlaceOrderForm.tsx
 import React, { useState, useEffect } from 'react';
 import {
   Box,
@@ -30,6 +30,8 @@ import {
   SliderThumb,
   Divider,
   useColorMode,
+  Switch,
+  Flex,
 } from '@chakra-ui/react';
 import { InfoIcon } from '@chakra-ui/icons';
 import { useForm, Controller } from 'react-hook-form';
@@ -44,6 +46,11 @@ interface PlaceOrderFormProps {
   isProcessing?: boolean;
   isWalletConnected?: boolean;
   availableBalance?: number;
+  defaultOrderType?: 'buy' | 'sell';
+  defaultContractType?: string;
+  defaultStrikeHashRate?: number;
+  defaultPrice?: number;
+  defaultQuantity?: number;
 }
 
 const PlaceOrderForm: React.FC<PlaceOrderFormProps> = ({
@@ -51,9 +58,14 @@ const PlaceOrderForm: React.FC<PlaceOrderFormProps> = ({
   isProcessing = false,
   isWalletConnected = false,
   availableBalance = 0,
+  defaultOrderType = 'buy',
+  defaultContractType = 'call',
+  defaultStrikeHashRate,
+  defaultPrice,
+  defaultQuantity = 1,
 }) => {
   const { colorMode } = useColorMode();
-  const [orderSide, setOrderSide] = useState<'buy' | 'sell'>('buy');
+  const [orderSide, setOrderSide] = useState<'buy' | 'sell'>(defaultOrderType);
   const [expiryEnabled, setExpiryEnabled] = useState(false);
   const [expiryMinutes, setExpiryMinutes] = useState(60);
   const [priceSlider, setPriceSlider] = useState(50);
@@ -66,14 +78,14 @@ const PlaceOrderForm: React.FC<PlaceOrderFormProps> = ({
   const { control, handleSubmit, setValue, watch, formState: { errors } } = useForm<PlaceOrderFormType>({
     defaultValues: {
       user_id: user?.id || '',
-      side: 'buy',
-      contract_type: 'call',
-      strike_hash_rate: 0,
+      side: defaultOrderType,
+      contract_type: defaultContractType,
+      strike_hash_rate: defaultStrikeHashRate || 0,
       start_block_height: 0,
       end_block_height: 0,
-      price: 0,
-      quantity: 1,
-      pub_key: userKeys && userKeys.length > 0 ? userKeys[0] : '',
+      price: defaultPrice || 0,
+      quantity: defaultQuantity,
+      pub_key: userKeys && userKeys.length > 0 ? userKeys[0].pub_key : '',
       expires_in: undefined,
     }
   });
@@ -91,8 +103,10 @@ const PlaceOrderForm: React.FC<PlaceOrderFormProps> = ({
         const response = await bitcoinService.getCurrentHashRate();
         if (response.success && response.data) {
           setCurrentHashRate(response.data);
-          // Set default strike hash rate to current hash rate
-          setValue('strike_hash_rate', response.data);
+          // Set default strike hash rate to current hash rate if not already provided
+          if (!defaultStrikeHashRate) {
+            setValue('strike_hash_rate', response.data);
+          }
         }
       } catch (error) {
         console.error('Failed to fetch current hash rate:', error);
@@ -120,7 +134,7 @@ const PlaceOrderForm: React.FC<PlaceOrderFormProps> = ({
     };
     
     fetchBestBlock();
-  }, [setValue]);
+  }, [setValue, defaultStrikeHashRate]);
   
   // Update user_id when user changes
   useEffect(() => {
@@ -132,7 +146,7 @@ const PlaceOrderForm: React.FC<PlaceOrderFormProps> = ({
   // Update default pub_key when userKeys changes
   useEffect(() => {
     if (userKeys && userKeys.length > 0 && !watch('pub_key')) {
-      setValue('pub_key', userKeys[0]);
+      setValue('pub_key', userKeys[0].pub_key);
     }
   }, [userKeys, setValue, watch]);
   
@@ -149,9 +163,11 @@ const PlaceOrderForm: React.FC<PlaceOrderFormProps> = ({
       const minPrice = 10000; // Minimum price in sats
       const maxPrice = 1000000; // Maximum price in sats
       const calculatedPrice = minPrice + (maxPrice - minPrice) * (priceSlider / 100);
-      setValue('price', Math.round(calculatedPrice));
+      if (!defaultPrice) {
+        setValue('price', Math.round(calculatedPrice));
+      }
     }
-  }, [priceSlider, currentHashRate, setValue]);
+  }, [priceSlider, currentHashRate, setValue, defaultPrice]);
   
   // Handle expiry toggle
   const handleExpiryToggle = (enabled: boolean) => {
@@ -392,7 +408,6 @@ const PlaceOrderForm: React.FC<PlaceOrderFormProps> = ({
                       {...field}
                       onChange={(_, value) => field.onChange(value)}
                       min={1}
-                      max={100}
                     >
                       <NumberInputField />
                       <NumberInputStepper>
@@ -405,140 +420,91 @@ const PlaceOrderForm: React.FC<PlaceOrderFormProps> = ({
                 )}
               />
               
+              <Box>
+                <Flex justify="space-between" align="center" mb={2}>
+                  <FormLabel mb="0">Order Expiration</FormLabel>
+                  <Switch
+                    isChecked={expiryEnabled}
+                    onChange={(e) => handleExpiryToggle(e.target.checked)}
+                  />
+                </Flex>
+                
+                {expiryEnabled && (
+                  <Controller
+                    name="expires_in"
+                    control={control}
+                    render={({ field }) => (
+                      <Select 
+                        value={expiryMinutes} 
+                        onChange={(e) => handleExpiryChange(parseInt(e.target.value))}
+                        isDisabled={!expiryEnabled}
+                      >
+                        <option value={15}>15 minutes</option>
+                        <option value={30}>30 minutes</option>
+                        <option value={60}>1 hour</option>
+                        <option value={360}>6 hours</option>
+                        <option value={1440}>24 hours</option>
+                        <option value={10080}>1 week</option>
+                      </Select>
+                    )}
+                  />
+                )}
+              </Box>
+              
               <Controller
                 name="pub_key"
                 control={control}
-                rules={{ required: 'Public key is required' }}
+                rules={{ 
+                  required: 'Public key is required',
+                  pattern: {
+                    value: /^[0-9a-fA-F]{64,66}$/,
+                    message: 'Please enter a valid public key (hex format)'
+                  }
+                }}
                 render={({ field }) => (
                   <FormControl isInvalid={!!errors.pub_key}>
                     <FormLabel>
                       Public Key
-                      <Tooltip label="The public key that will be used for this contract">
-                        <InfoIcon ml={1} boxSize={3.5} />
+                      <Tooltip label="Your public key is used to identify you as a participant in the contract">
+                        <InfoIcon ml={1} boxSize={3} />
                       </Tooltip>
                     </FormLabel>
-                    <Select {...field}>
-                      {userKeys && userKeys.length > 0 ? (
-                        userKeys.map((key, index) => (
-                          <option key={index} value={key}>
-                            {key.substring(0, 6)}...{key.substring(key.length - 4)}
+                    {userKeys && userKeys.length > 0 ? (
+                      <Select {...field}>
+                        {userKeys.map((key) => (
+                          <option key={key.id} value={key.pub_key}>
+                            {key.label} ({key.key_type})
                           </option>
-                        ))
-                      ) : (
-                        <option value="">No keys available</option>
-                      )}
-                    </Select>
+                        ))}
+                      </Select>
+                    ) : (
+                      <Input {...field} placeholder="Enter your public key" />
+                    )}
                     <FormErrorMessage>{errors.pub_key?.message}</FormErrorMessage>
                   </FormControl>
                 )}
               />
               
-              <HStack justify="space-between">
-                <Text>Order Expiry:</Text>
-                <HStack>
-                  <Button
-                    size="sm"
-                    colorScheme={expiryEnabled ? "blue" : "gray"}
-                    variant={expiryEnabled ? "solid" : "outline"}
-                    onClick={() => handleExpiryToggle(true)}
-                  >
-                    Custom
-                  </Button>
-                  <Button
-                    size="sm"
-                    colorScheme={!expiryEnabled ? "blue" : "gray"}
-                    variant={!expiryEnabled ? "solid" : "outline"}
-                    onClick={() => handleExpiryToggle(false)}
-                  >
-                    None
-                  </Button>
-                </HStack>
-              </HStack>
-              
-              {expiryEnabled && (
-                <HStack>
-                  <Button
-                    size="sm"
-                    colorScheme={expiryMinutes === 60 ? "blue" : "gray"}
-                    variant={expiryMinutes === 60 ? "solid" : "outline"}
-                    onClick={() => handleExpiryChange(60)}
-                  >
-                    1 hour
-                  </Button>
-                  <Button
-                    size="sm"
-                    colorScheme={expiryMinutes === 24 * 60 ? "blue" : "gray"}
-                    variant={expiryMinutes === 24 * 60 ? "solid" : "outline"}
-                    onClick={() => handleExpiryChange(24 * 60)}
-                  >
-                    1 day
-                  </Button>
-                  <Button
-                    size="sm"
-                    colorScheme={expiryMinutes === 7 * 24 * 60 ? "blue" : "gray"}
-                    variant={expiryMinutes === 7 * 24 * 60 ? "solid" : "outline"}
-                    onClick={() => handleExpiryChange(7 * 24 * 60)}
-                  >
-                    1 week
-                  </Button>
-                </HStack>
-              )}
-              
               <Divider my={2} />
               
-              <Box>
-                <Text fontWeight="bold">Order Summary:</Text>
-                <HStack justify="space-between" mt={2}>
-                  <Text>Type:</Text>
-                  <Text>
-                    {watchContractType === 'call' ? 'CALL' : 'PUT'} (
-                    {watchContractType === 'call' 
-                      ? 'Bet hash rate will increase' 
-                      : 'Bet hash rate will decrease'}
-                    )
-                  </Text>
-                </HStack>
+              <Box bg={colorMode === 'light' ? 'gray.50' : 'gray.700'} p={3} borderRadius="md">
                 <HStack justify="space-between">
-                  <Text>Total {orderSide === 'buy' ? 'Cost' : 'Value'}:</Text>
-                  <Text fontWeight="bold">
-                    {calculateTotal().toLocaleString()} sats
-                  </Text>
+                  <Text>Total Cost:</Text>
+                  <Text fontWeight="bold">{calculateTotal().toLocaleString()} sats</Text>
                 </HStack>
                 {isWalletConnected && (
-                  <HStack justify="space-between">
-                    <Text>Available Balance:</Text>
-                    <Text>{availableBalance.toLocaleString()} sats</Text>
+                  <HStack justify="space-between" mt={1}>
+                    <Text fontSize="sm">Available Balance:</Text>
+                    <Text fontSize="sm">{availableBalance.toLocaleString()} sats</Text>
                   </HStack>
                 )}
               </Box>
-              
-              <Button
-                type="submit"
-                colorScheme={orderSide === 'buy' ? 'green' : 'red'}
-                isLoading={isProcessing}
-                loadingText="Processing"
-                size="lg"
-                isDisabled={
-                  !isWalletConnected || 
-                  (orderSide === 'buy' && calculateTotal() > availableBalance)
-                }
-              >
-                {orderSide === 'buy' ? 'Buy' : 'Sell'} {watchContractType?.toUpperCase()}
-              </Button>
-              
-              {orderSide === 'buy' && calculateTotal() > availableBalance && (
-                <Text color="red.500" fontSize="sm" textAlign="center">
-                  Insufficient balance to place this order
-                </Text>
-              )}
             </VStack>
           </TabPanel>
           
-          {/* Sell Panel - identical to Buy Panel except for button color and label */}
+          {/* Sell Panel - Same as Buy Panel with different color scheme */}
           <TabPanel>
-            {/* Same form controls as Buy Panel */}
             <VStack spacing={5} align="stretch">
-              {/* Identical form controls with same Controllers */}
               <Controller
                 name="contract_type"
                 control={control}
@@ -681,6 +647,7 @@ const PlaceOrderForm: React.FC<PlaceOrderFormProps> = ({
                       min={0}
                       max={100}
                       mt={2}
+                      colorScheme="red"
                     >
                       <SliderTrack>
                         <SliderFilledTrack />
@@ -709,7 +676,6 @@ const PlaceOrderForm: React.FC<PlaceOrderFormProps> = ({
                       {...field}
                       onChange={(_, value) => field.onChange(value)}
                       min={1}
-                      max={100}
                     >
                       <NumberInputField />
                       <NumberInputStepper>
@@ -722,122 +688,103 @@ const PlaceOrderForm: React.FC<PlaceOrderFormProps> = ({
                 )}
               />
               
+              <Box>
+                <Flex justify="space-between" align="center" mb={2}>
+                  <FormLabel mb="0">Order Expiration</FormLabel>
+                  <Switch
+                    isChecked={expiryEnabled}
+                    onChange={(e) => handleExpiryToggle(e.target.checked)}
+                  />
+                </Flex>
+                
+                {expiryEnabled && (
+                  <Controller
+                    name="expires_in"
+                    control={control}
+                    render={({ field }) => (
+                      <Select 
+                        value={expiryMinutes} 
+                        onChange={(e) => handleExpiryChange(parseInt(e.target.value))}
+                        isDisabled={!expiryEnabled}
+                      >
+                        <option value={15}>15 minutes</option>
+                        <option value={30}>30 minutes</option>
+                        <option value={60}>1 hour</option>
+                        <option value={360}>6 hours</option>
+                        <option value={1440}>24 hours</option>
+                        <option value={10080}>1 week</option>
+                      </Select>
+                    )}
+                  />
+                )}
+              </Box>
+              
               <Controller
                 name="pub_key"
                 control={control}
-                rules={{ required: 'Public key is required' }}
+                rules={{ 
+                  required: 'Public key is required',
+                  pattern: {
+                    value: /^[0-9a-fA-F]{64,66}$/,
+                    message: 'Please enter a valid public key (hex format)'
+                  }
+                }}
                 render={({ field }) => (
                   <FormControl isInvalid={!!errors.pub_key}>
                     <FormLabel>
                       Public Key
-                      <Tooltip label="The public key that will be used for this contract">
-                        <InfoIcon ml={1} boxSize={3.5} />
+                      <Tooltip label="Your public key is used to identify you as a participant in the contract">
+                        <InfoIcon ml={1} boxSize={3} />
                       </Tooltip>
                     </FormLabel>
-                    <Select {...field}>
-                      {userKeys && userKeys.length > 0 ? (
-                        userKeys.map((key, index) => (
-                          <option key={index} value={key}>
-                            {key.substring(0, 6)}...{key.substring(key.length - 4)}
+                    {userKeys && userKeys.length > 0 ? (
+                      <Select {...field}>
+                        {userKeys.map((key) => (
+                          <option key={key.id} value={key.pub_key}>
+                            {key.label} ({key.key_type})
                           </option>
-                        ))
-                      ) : (
-                        <option value="">No keys available</option>
-                      )}
-                    </Select>
+                        ))}
+                      </Select>
+                    ) : (
+                      <Input {...field} placeholder="Enter your public key" />
+                    )}
                     <FormErrorMessage>{errors.pub_key?.message}</FormErrorMessage>
                   </FormControl>
                 )}
               />
               
-              {/* Order expiry controls identical to Buy panel */}
-              <HStack justify="space-between">
-                <Text>Order Expiry:</Text>
-                <HStack>
-                  <Button
-                    size="sm"
-                    colorScheme={expiryEnabled ? "blue" : "gray"}
-                    variant={expiryEnabled ? "solid" : "outline"}
-                    onClick={() => handleExpiryToggle(true)}
-                  >
-                    Custom
-                  </Button>
-                  <Button
-                    size="sm"
-                    colorScheme={!expiryEnabled ? "blue" : "gray"}
-                    variant={!expiryEnabled ? "solid" : "outline"}
-                    onClick={() => handleExpiryToggle(false)}
-                  >
-                    None
-                  </Button>
-                </HStack>
-              </HStack>
-              
-              {expiryEnabled && (
-                <HStack>
-                  <Button
-                    size="sm"
-                    colorScheme={expiryMinutes === 60 ? "blue" : "gray"}
-                    variant={expiryMinutes === 60 ? "solid" : "outline"}
-                    onClick={() => handleExpiryChange(60)}
-                  >
-                    1 hour
-                  </Button>
-                  <Button
-                    size="sm"
-                    colorScheme={expiryMinutes === 24 * 60 ? "blue" : "gray"}
-                    variant={expiryMinutes === 24 * 60 ? "solid" : "outline"}
-                    onClick={() => handleExpiryChange(24 * 60)}
-                  >
-                    1 day
-                  </Button>
-                  <Button
-                    size="sm"
-                    colorScheme={expiryMinutes === 7 * 24 * 60 ? "blue" : "gray"}
-                    variant={expiryMinutes === 7 * 24 * 60 ? "solid" : "outline"}
-                    onClick={() => handleExpiryChange(7 * 24 * 60)}
-                  >
-                    1 week
-                  </Button>
-                </HStack>
-              )}
-              
               <Divider my={2} />
               
-              <Box>
-                <Text fontWeight="bold">Order Summary:</Text>
-                <HStack justify="space-between" mt={2}>
-                  <Text>Type:</Text>
-                  <Text>
-                    {watchContractType === 'call' ? 'CALL' : 'PUT'} (
-                    {watchContractType === 'call' 
-                      ? 'Bet hash rate will increase' 
-                      : 'Bet hash rate will decrease'}
-                    )
-                  </Text>
-                </HStack>
+              <Box bg={colorMode === 'light' ? 'gray.50' : 'gray.700'} p={3} borderRadius="md">
                 <HStack justify="space-between">
-                  <Text>Total {orderSide === 'buy' ? 'Cost' : 'Value'}:</Text>
-                  <Text fontWeight="bold">
-                    {calculateTotal().toLocaleString()} sats
-                  </Text>
+                  <Text>Total Revenue:</Text>
+                  <Text fontWeight="bold">{calculateTotal().toLocaleString()} sats</Text>
                 </HStack>
               </Box>
-              
-              <Button
-                type="submit"
-                colorScheme="red"
-                isLoading={isProcessing}
-                loadingText="Processing"
-                size="lg"
-                isDisabled={!isWalletConnected}
-              >
-                Sell {watchContractType?.toUpperCase()}
-              </Button>
             </VStack>
           </TabPanel>
         </TabPanels>
       </Tabs>
+      
+      <Divider my={4} />
+      
+      <Button
+        type="submit"
+        colorScheme={orderSide === 'buy' ? 'green' : 'red'}
+        width="full"
+        size="lg"
+        isLoading={isProcessing}
+        loadingText="Processing"
+        isDisabled={!isWalletConnected}
+      >
+        {orderSide === 'buy' ? 'Place Buy Order' : 'Place Sell Order'}
+      </Button>
+      
+      {!isWalletConnected && (
+        <Text mt={2} fontSize="sm" color="yellow.500" textAlign="center">
+          Please connect your wallet to place orders
+        </Text>
+      )}
     </Box>
   );
 };

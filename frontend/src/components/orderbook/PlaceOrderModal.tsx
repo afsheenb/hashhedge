@@ -5,52 +5,42 @@ import {
   ModalOverlay,
   ModalContent,
   ModalHeader,
-  ModalCloseButton,
   ModalBody,
-  ModalFooter,
-  Button,
+  ModalCloseButton,
   useToast,
-  Alert,
-  AlertIcon,
-  AlertTitle,
-  AlertDescription,
 } from '@chakra-ui/react';
-import { orderService } from '../../api';
 import { useAppDispatch, useAppSelector } from '../../hooks/redux-hooks';
-import { getOrderBook } from '../../store/order-slice';
-import { PlaceOrderForm as PlaceOrderFormType } from '../../types';
+import { placeOrder } from '../../store/order-slice';
 import PlaceOrderForm from './PlaceOrderForm';
+import { PlaceOrderForm as PlaceOrderFormType } from '../../types';
 
 interface PlaceOrderModalProps {
   isOpen: boolean;
   onClose: () => void;
-  onOrderPlaced?: () => void;
+  defaultOrderType?: 'buy' | 'sell';
+  defaultContractType?: string;
+  defaultStrikeHashRate?: number;
+  defaultPrice?: number;
+  defaultQuantity?: number;
 }
 
-const PlaceOrderModal: React.FC<PlaceOrderModalProps> = ({ 
-  isOpen, 
+const PlaceOrderModal: React.FC<PlaceOrderModalProps> = ({
+  isOpen,
   onClose,
-  onOrderPlaced,
+  defaultOrderType,
+  defaultContractType,
+  defaultStrikeHashRate,
+  defaultPrice,
+  defaultQuantity,
 }) => {
   const [isSubmitting, setIsSubmitting] = useState(false);
   
-  const toast = useToast();
   const dispatch = useAppDispatch();
-  const { isAuthenticated, user } = useAppSelector(state => state.auth);
-  const { isConnected, balance } = useAppSelector(state => state.arkWallet);
+  const toast = useToast();
+  const { user } = useAppSelector((state) => state.auth);
+  const { isConnected, balance } = useAppSelector((state) => state.arkWallet);
   
-  const handleSubmitOrder = async (formData: PlaceOrderFormType) => {
-    if (!isAuthenticated) {
-      toast({
-        title: 'Authentication required',
-        description: 'Please log in to place orders',
-        status: 'warning',
-        duration: 5000,
-        isClosable: true,
-      });
-      return;
-    }
-    
+  const handlePlaceOrder = async (formData: PlaceOrderFormType) => {
     if (!isConnected) {
       toast({
         title: 'Wallet not connected',
@@ -66,36 +56,26 @@ const PlaceOrderModal: React.FC<PlaceOrderModalProps> = ({
     
     try {
       // Add user ID to form data
-      const orderData = {
+      const completeFormData: PlaceOrderFormType = {
         ...formData,
         user_id: user?.id || '',
       };
       
-      const response = await orderService.placeOrder(orderData);
-      
-      if (!response.success) {
-        throw new Error(response.error || 'Failed to place order');
-      }
+      const resultAction = await dispatch(placeOrder(completeFormData)).unwrap();
       
       toast({
         title: 'Order placed',
-        description: 'Your order has been successfully placed',
+        description: `Your ${formData.side} order has been placed successfully`,
         status: 'success',
-        duration: 5000,
+        duration: 3000,
         isClosable: true,
       });
       
-      // Refresh order book data
-      dispatch(getOrderBook({
-        contractType: formData.contract_type.toLowerCase(),
-        strikeHashRate: formData.strike_hash_rate,
-      }));
-      
       onClose();
       
-      if (onOrderPlaced) {
-        onOrderPlaced();
-      }
+      // Refresh order book
+      // You can add any additional actions here after successful order placement
+      
     } catch (error) {
       toast({
         title: 'Error',
@@ -110,42 +90,24 @@ const PlaceOrderModal: React.FC<PlaceOrderModalProps> = ({
   };
   
   return (
-    <Modal isOpen={isOpen} onClose={onClose} size="xl" scrollBehavior="inside">
+    <Modal isOpen={isOpen} onClose={onClose} size="xl">
       <ModalOverlay />
       <ModalContent>
-        <ModalHeader>Place New Order</ModalHeader>
+        <ModalHeader>Place Order</ModalHeader>
         <ModalCloseButton />
-        <ModalBody>
-          {!isAuthenticated ? (
-            <Alert status="warning">
-              <AlertIcon />
-              <AlertTitle>Authentication Required</AlertTitle>
-              <AlertDescription>
-                Please log in to place orders.
-              </AlertDescription>
-            </Alert>
-          ) : !isConnected ? (
-            <Alert status="warning">
-              <AlertIcon />
-              <AlertTitle>Wallet Not Connected</AlertTitle>
-              <AlertDescription>
-                Please connect your wallet to place orders.
-              </AlertDescription>
-            </Alert>
-          ) : (
-            <PlaceOrderForm 
-              onSubmit={handleSubmitOrder} 
-              isProcessing={isSubmitting}
-              isWalletConnected={isConnected}
-              availableBalance={balance?.confirmed || 0}
-            />
-          )}
+        <ModalBody pb={6}>
+          <PlaceOrderForm 
+            onSubmit={handlePlaceOrder} 
+            isProcessing={isSubmitting}
+            isWalletConnected={isConnected}
+            availableBalance={balance?.available || 0}
+            defaultOrderType={defaultOrderType}
+            defaultContractType={defaultContractType}
+            defaultStrikeHashRate={defaultStrikeHashRate}
+            defaultPrice={defaultPrice}
+            defaultQuantity={defaultQuantity}
+          />
         </ModalBody>
-        <ModalFooter>
-          <Button variant="ghost" onClick={onClose}>
-            Cancel
-          </Button>
-        </ModalFooter>
       </ModalContent>
     </Modal>
   );
