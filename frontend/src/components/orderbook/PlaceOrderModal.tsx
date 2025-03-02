@@ -1,4 +1,4 @@
-
+// src/components/orderbook/PlaceOrderModal.tsx
 import React, { useState } from 'react';
 import {
   Modal,
@@ -10,9 +10,14 @@ import {
   ModalFooter,
   Button,
   useToast,
+  Alert,
+  AlertIcon,
+  AlertTitle,
+  AlertDescription,
 } from '@chakra-ui/react';
 import { orderService } from '../../api';
-import { useAppSelector } from '../../hooks/redux-hooks';
+import { useAppDispatch, useAppSelector } from '../../hooks/redux-hooks';
+import { getOrderBook } from '../../store/order-slice';
 import { PlaceOrderForm as PlaceOrderFormType } from '../../types';
 import PlaceOrderForm from './PlaceOrderForm';
 
@@ -30,6 +35,7 @@ const PlaceOrderModal: React.FC<PlaceOrderModalProps> = ({
   const [isSubmitting, setIsSubmitting] = useState(false);
   
   const toast = useToast();
+  const dispatch = useAppDispatch();
   const { isAuthenticated, user } = useAppSelector(state => state.auth);
   const { isConnected, balance } = useAppSelector(state => state.arkWallet);
   
@@ -38,6 +44,17 @@ const PlaceOrderModal: React.FC<PlaceOrderModalProps> = ({
       toast({
         title: 'Authentication required',
         description: 'Please log in to place orders',
+        status: 'warning',
+        duration: 5000,
+        isClosable: true,
+      });
+      return;
+    }
+    
+    if (!isConnected) {
+      toast({
+        title: 'Wallet not connected',
+        description: 'Please connect your wallet to place orders',
         status: 'warning',
         duration: 5000,
         isClosable: true,
@@ -68,6 +85,12 @@ const PlaceOrderModal: React.FC<PlaceOrderModalProps> = ({
         isClosable: true,
       });
       
+      // Refresh order book data
+      dispatch(getOrderBook({
+        contractType: formData.contract_type.toLowerCase(),
+        strikeHashRate: formData.strike_hash_rate,
+      }));
+      
       onClose();
       
       if (onOrderPlaced) {
@@ -93,12 +116,30 @@ const PlaceOrderModal: React.FC<PlaceOrderModalProps> = ({
         <ModalHeader>Place New Order</ModalHeader>
         <ModalCloseButton />
         <ModalBody>
-          <PlaceOrderForm 
-            onSubmit={handleSubmitOrder} 
-            isProcessing={isSubmitting}
-            isWalletConnected={isConnected}
-            availableBalance={balance?.confirmed || 0}
-          />
+          {!isAuthenticated ? (
+            <Alert status="warning">
+              <AlertIcon />
+              <AlertTitle>Authentication Required</AlertTitle>
+              <AlertDescription>
+                Please log in to place orders.
+              </AlertDescription>
+            </Alert>
+          ) : !isConnected ? (
+            <Alert status="warning">
+              <AlertIcon />
+              <AlertTitle>Wallet Not Connected</AlertTitle>
+              <AlertDescription>
+                Please connect your wallet to place orders.
+              </AlertDescription>
+            </Alert>
+          ) : (
+            <PlaceOrderForm 
+              onSubmit={handleSubmitOrder} 
+              isProcessing={isSubmitting}
+              isWalletConnected={isConnected}
+              availableBalance={balance?.confirmed || 0}
+            />
+          )}
         </ModalBody>
         <ModalFooter>
           <Button variant="ghost" onClick={onClose}>
@@ -111,4 +152,3 @@ const PlaceOrderModal: React.FC<PlaceOrderModalProps> = ({
 };
 
 export default PlaceOrderModal;
-

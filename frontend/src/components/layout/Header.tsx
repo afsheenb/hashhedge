@@ -1,5 +1,6 @@
+// src/components/layout/Header.tsx
 import React from 'react';
-import { Box, Flex, Button, Heading, HStack, useColorMode, IconButton, useDisclosure, Menu, MenuButton, MenuItem, MenuList } from '@chakra-ui/react';
+import { Box, Flex, Button, Heading, HStack, useColorMode, IconButton, Menu, MenuButton, MenuItem, MenuList } from '@chakra-ui/react';
 import { Link as RouterLink, useNavigate } from 'react-router-dom';
 import { MoonIcon, SunIcon } from '@chakra-ui/icons';
 import { useAppDispatch, useAppSelector } from '../../hooks/redux-hooks';
@@ -52,9 +53,6 @@ const Header: React.FC = () => {
             <Button as={RouterLink} to="/hashrate" variant="ghost">
               Hash Rate
             </Button>
-            <Button as={RouterLink} to="/wallet" variant="ghost">
-              Wallet
-            </Button>
           </HStack>
         </Flex>
 
@@ -97,4 +95,3 @@ const Header: React.FC = () => {
 };
 
 export default Header;
-

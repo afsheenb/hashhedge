@@ -292,3 +292,5 @@ const ContractFunding: React.FC<ContractFundingProps> = ({ contract, onSuccess }
     </Box>
   );
 };
+
+export default ContractFunding;
