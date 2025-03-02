@@ -1,72 +1,116 @@
 // src/features/wallet/arkWalletSlice.ts
 import { createSlice, createAsyncThunk, PayloadAction } from '@reduxjs/toolkit';
-import { InMemoryKey, Wallet } from '@arklabs/wallet-sdk';
+import { RootState } from '../../store';
 
-interface ArkWalletState {
-  isInitialized: boolean;
-  isConnected: boolean;
-  addresses: {
-    onchain: string;
-    offchain: string;
-    bip21: string;
-  } | null;
-  balance: {
+// Import the Ark Wallet SDK
+import { InMemoryKey, Wallet, NetworkName } from '@arklabs/wallet-sdk';
+
+// Define types based on Ark Wallet SDK documentation
+interface ArkWalletBalance {
+  total: number;
+  confirmed: number;
+  unconfirmed: number;
+  available: number;
+  onchain: {
     total: number;
-    onchain: {
-      total: number;
-      confirmed: number;
-      unconfirmed: number;
-    };
-    offchain: {
-      total: number;
-      settled: number;
-      pending: number;
-      swept: number;
-    };
-  } | null;
-  loading: boolean;
-  error: string | null;
+    confirmed: number;
+    unconfirmed: number;
+  };
+  offchain: {
+    total: number;
+    settled: number;
+    pending: number;
+    swept: number;
+  };
 }
 
-const initialState: ArkWalletState = {
-  isInitialized: false,
-  isConnected: false,
-  addresses: null,
-  balance: null,
-  loading: false,
-  error: null,
-};
+interface ArkAddresses {
+  onchain: string;
+  offchain: string;
+  bip21: string;
+}
 
-// Wallet instance reference
+interface SendBitcoinParams {
+  address: string;
+  amount: number;
+  feeRate?: number;
+}
+
+interface SignTransactionParams {
+  txHex: string;
+  contractId: string;
+}
+
+interface BroadcastTransactionParams {
+  txHex: string;
+}
+
+// Wallet SDK instance - will be initialized when user connects
 let walletInstance: Wallet | null = null;
 
-// Initialize wallet with private key
+// Network configuration - could be made configurable via .env files
+const NETWORK: NetworkName = 'mutinynet';
+const ESPLORA_URL = 'https://mutinynet.com/api';
+const ARK_SERVER_URL = 'https://master.mutinynet.arklabs.to';
+const ARK_SERVER_PUBLIC_KEY = 'd45fc69d4ff1f45cbba36ab1037261863c3a49c4910bc183ae975247358920b6';
+
+// Function to get the wallet instance for other components to use
+export const getWalletInstance = (): Wallet | null => {
+  return walletInstance;
+};
+
+// Initialize the wallet with a private key
 export const initializeWallet = createAsyncThunk(
   'arkWallet/initialize',
   async (privateKeyHex: string, { rejectWithValue }) => {
     try {
-      // Create identity from private key
+      // Validate private key format
+      if (!privateKeyHex.match(/^[0-9a-fA-F]{64}$/)) {
+        throw new Error('Invalid private key format. Must be 64 hex characters.');
+      }
+
+      // Create the identity from the provided private key
       const identity = InMemoryKey.fromHex(privateKeyHex);
-      
-      // Create new wallet instance
-      walletInstance = new Wallet({
-        network: 'mutinynet', // Use appropriate network (bitcoin, testnet, etc.)
+
+      // Initialize the wallet with network, identity, and Ark configuration
+      const wallet = new Wallet({
+        network: NETWORK,
         identity: identity,
-        // Use environment variables for URLs
-        esploraUrl: process.env.REACT_APP_ESPLORA_URL,
-        arkServerUrl: process.env.REACT_APP_ARK_SERVER_URL,
-        arkServerPublicKey: process.env.REACT_APP_ARK_SERVER_PUBLIC_KEY
+        esploraUrl: ESPLORA_URL,
+        arkServerUrl: ARK_SERVER_URL,
+        arkServerPublicKey: ARK_SERVER_PUBLIC_KEY
       });
 
-      // Get wallet addresses
-      const addresses = walletInstance.getAddress();
-      
-      // Fetch initial balance
-      const balance = await walletInstance.getBalance();
-      
-      return { addresses, balance };
+      // Store the wallet instance for later use
+      walletInstance = wallet;
+
+      // Get addresses for the wallet
+      const addresses = wallet.getAddress();
+
+      // Get initial balance
+      const balance = await wallet.getBalance();
+
+      return {
+        addresses,
+        balance
+      };
     } catch (error) {
+      console.error('Failed to initialize wallet:', error);
       return rejectWithValue(error instanceof Error ? error.message : 'Failed to initialize wallet');
+    }
+  }
+);
+
+// Disconnect the wallet and clean up
+export const disconnectWallet = createAsyncThunk(
+  'arkWallet/disconnect',
+  async (_, { rejectWithValue }) => {
+    try {
+      walletInstance = null;
+      return true;
+    } catch (error) {
+      console.error('Failed to disconnect wallet:', error);
+      return rejectWithValue(error instanceof Error ? error.message : 'Failed to disconnect wallet');
     }
   }
 );
@@ -83,362 +127,175 @@ export const fetchWalletBalance = createAsyncThunk(
       const balance = await walletInstance.getBalance();
       return balance;
     } catch (error) {
-      return rejectWithValue(error instanceof Error ? error.message : 'Failed to fetch balance');
+      console.error('Failed to fetch wallet balance:', error);
+      return rejectWithValue(error instanceof Error ? error.message : 'Failed to fetch wallet balance');
     }
   }
 );
 
-// Send bitcoin (on-chain or off-chain depending on the address)
+// Send Bitcoin (auto-select on-chain or off-chain based on address)
 export const sendBitcoin = createAsyncThunk(
   'arkWallet/sendBitcoin',
-  async (
-    { address, amount, feeRate }: { address: string; amount: number; feeRate?: number },
-    { rejectWithValue }
-  ) => {
+  async (params: SendBitcoinParams, { rejectWithValue }) => {
     try {
       if (!walletInstance) {
         throw new Error('Wallet not initialized');
       }
       
-      const txid = await walletInstance.sendBitcoin({
-        address,
-        amount,
-        feeRate
-      });
+      // Validate address and amount
+      if (!params.address) {
+        throw new Error('Address is required');
+      }
       
+      if (params.amount <= 0) {
+        throw new Error('Amount must be greater than 0');
+      }
+      
+      // Send the transaction
+      const txid = await walletInstance.sendBitcoin(params);
       return txid;
     } catch (error) {
-      return rejectWithValue(error instanceof Error ? error.message : 'Failed to send bitcoin');
+      console.error('Failed to send Bitcoin:', error);
+      return rejectWithValue(error instanceof Error ? error.message : 'Failed to send Bitcoin');
     }
   }
 );
 
-// Send bitcoin specifically via off-chain (Ark)
-export const sendOffchain = createAsyncThunk(
-  'arkWallet/sendOffchain',
-  async (
-    { address, amount, feeRate }: { address: string; amount: number; feeRate?: number },
-    { rejectWithValue }
-  ) => {
+// Send Bitcoin on-chain
+export const sendOnchain = createAsyncThunk(
+  'arkWallet/sendOnchain',
+  async (params: SendBitcoinParams, { rejectWithValue }) => {
     try {
       if (!walletInstance) {
         throw new Error('Wallet not initialized');
       }
       
-      const txid = await walletInstance.sendOffchain({
-        address,
-        amount,
-        feeRate
-      });
+      // Validate address and amount
+      if (!params.address) {
+        throw new Error('Address is required');
+      }
       
+      if (params.amount <= 0) {
+        throw new Error('Amount must be greater than 0');
+      }
+      
+      // Send the on-chain transaction
+      const txid = await walletInstance.sendOnchain(params);
       return txid;
     } catch (error) {
+      console.error('Failed to send on-chain transaction:', error);
+      return rejectWithValue(error instanceof Error ? error.message : 'Failed to send on-chain transaction');
+    }
+  }
+);
+
+// Send Bitcoin off-chain
+export const sendOffchain = createAsyncThunk(
+  'arkWallet/sendOffchain',
+  async (params: SendBitcoinParams, { rejectWithValue }) => {
+    try {
+      if (!walletInstance) {
+        throw new Error('Wallet not initialized');
+      }
+      
+      // Validate address and amount
+      if (!params.address) {
+        throw new Error('Address is required');
+      }
+      
+      if (params.amount <= 0) {
+        throw new Error('Amount must be greater than 0');
+      }
+      
+      // Send the off-chain transaction
+      const txid = await walletInstance.sendOffchain(params);
+      return txid;
+    } catch (error) {
+      console.error('Failed to send off-chain transaction:', error);
       return rejectWithValue(error instanceof Error ? error.message : 'Failed to send off-chain transaction');
     }
   }
 );
 
-// Get wallet coins (UTXOs)
-export const getWalletCoins = createAsyncThunk(
-  'arkWallet/getCoins',
-  async (_, { rejectWithValue }) => {
+// Sign a transaction
+export const signTransaction = createAsyncThunk(
+  'arkWallet/signTransaction',
+  async (params: SignTransactionParams, { rejectWithValue }) => {
+    try {
+      if (!walletInstance) {
+        throw new Error('Wallet not initialized');
+      }
+
+      // Parse the transaction hex
+      const tx = await walletInstance.parsePsbt(params.txHex);
+      
+      // Sign the transaction
+      const signedTx = await walletInstance.signPsbt(tx);
+      
+      // Finalize the transaction
+      const finalizedTx = await walletInstance.finalizePsbt(signedTx);
+      
+      // Extract the finalized transaction hex
+      const finalTxHex = walletInstance.extractPsbt(finalizedTx);
+      
+      return finalTxHex;
+    } catch (error) {
+      console.error('Failed to sign transaction:', error);
+      return rejectWithValue(error instanceof Error ? error.message : 'Failed to sign transaction');
+    }
+  }
+);
+
+// Broadcast a transaction
+export const broadcastTransaction = createAsyncThunk(
+  'arkWallet/broadcastTransaction',
+  async (params: BroadcastTransactionParams, { rejectWithValue }) => {
     try {
       if (!walletInstance) {
         throw new Error('Wallet not initialized');
       }
       
-      const coins = await walletInstance.getCoins();
-      return coins;
+      // Broadcast the transaction
+      const txid = await walletInstance.broadcastTransaction(params.txHex);
+      return txid;
     } catch (error) {
-      return rejectWithValue(error instanceof Error ? error.message : 'Failed to get coins');
+      console.error('Failed to broadcast transaction:', error);
+      return rejectWithValue(error instanceof Error ? error.message : 'Failed to broadcast transaction');
     }
   }
 );
 
-// Get virtual coins (for Ark off-chain)
-export const getVirtualCoins = createAsyncThunk(
-  'arkWallet/getVirtualCoins',
-  async (_, { rejectWithValue }) => {
-    try {
-      if (!walletInstance) {
-        throw new Error('Wallet not initialized');
-      }
-      
-      const virtualCoins = await walletInstance.getVirtualCoins();
-      return virtualCoins;
-    } catch (error) {
-      return rejectWithValue(error instanceof Error ? error.message : 'Failed to get virtual coins');
-    }
-  }
-);
-
-// Clear wallet state (disconnect)
-export const disconnectWallet = createAsyncThunk(
-  'arkWallet/disconnect',
-  async (_, { dispatch }) => {
-    walletInstance = null;
-    return true;
-  }
-);
-
-// Create slice
-const arkWalletSlice = createSlice({
-  name: 'arkWallet',
-  initialState,
-  reducers: {
-    clearWalletError: (state) => {
-      state.error = null;
-    },
-  },
-  extraReducers: (builder) => {
-    // Initialize wallet
-    builder.addCase(initializeWallet.pending, (state) => {
-      state.loading = true;
-      state.error = null;
-    });
-    builder.addCase(initializeWallet.fulfilled, (state, action) => {
-      state.loading = false;
-      state.isInitialized = true;
-      state.isConnected = true;
-      state.addresses = action.payload.addresses;
-      state.balance = action.payload.balance;
-    });
-    builder.addCase(initializeWallet.rejected, (state, action) => {
-      state.loading = false;
-      state.error = action.payload as string;
-    });
-
-    // Fetch balance
-    builder.addCase(fetchWalletBalance.pending, (state) => {
-      state.loading = true;
-      state.error = null;
-    });
-    builder.addCase(fetchWalletBalance.fulfilled, (state, action) => {
-      state.loading = false;
-      state.balance = action.payload;
-    });
-    builder.addCase(fetchWalletBalance.rejected, (state, action) => {
-      state.loading = false;
-      state.error = action.payload as string;
-    });
-
-    // Send bitcoin (general case)
-    builder.addCase(sendBitcoin.pending, (state) => {
-      state.loading = true;
-      state.error = null;
-    });
-    builder.addCase(sendBitcoin.fulfilled, (state) => {
-      state.loading = false;
-    });
-    builder.addCase(sendBitcoin.rejected, (state, action) => {
-      state.loading = false;
-      state.error = action.payload as string;
-    });
-
-    // Disconnect wallet
-    builder.addCase(disconnectWallet.fulfilled, (state) => {
-      state.isInitialized = false;
-      state.isConnected = false;
-      state.addresses = null;
-      state.balance = null;
-    });
-  },
-});
-
-export const { clearWalletError } = arkWalletSlice.actions;
-export default arkWalletSlice.reducer;
-
-// Utility functions for working with wallet
-export const getWalletInstance = (): Wallet | null => walletInstance;
-import { createSlice, createAsyncThunk, PayloadAction } from '@reduxjs/toolkit';
-import { InMemoryKey, Wallet } from '@arklabs/wallet-sdk';
-
+// Define the initial state
 interface ArkWalletState {
-  isInitialized: boolean;
   isConnected: boolean;
-  addresses: {
-    onchain: string;
-    offchain: string;
-    bip21: string;
-  } | null;
-  balance: {
-    total: number;
-    onchain: {
-      total: number;
-      confirmed: number;
-      unconfirmed: number;
-    };
-    offchain: {
-      total: number;
-      settled: number;
-      pending: number;
-      swept: number;
-    };
-  } | null;
+  addresses: ArkAddresses | null;
+  balance: ArkWalletBalance | null;
+  userKeys: string[];
   loading: boolean;
   error: string | null;
 }
 
 const initialState: ArkWalletState = {
-  isInitialized: false,
   isConnected: false,
   addresses: null,
   balance: null,
+  userKeys: [],
   loading: false,
   error: null,
 };
 
-// Wallet instance reference
-let walletInstance: Wallet | null = null;
-
-// Initialize wallet with private key
-export const initializeWallet = createAsyncThunk(
-  'arkWallet/initialize',
-  async (privateKeyHex: string, { rejectWithValue }) => {
-    try {
-      // Create identity from private key
-      const identity = InMemoryKey.fromHex(privateKeyHex);
-      
-      // Create new wallet instance
-      walletInstance = new Wallet({
-        network: 'mutinynet', // Use appropriate network (bitcoin, testnet, etc.)
-        identity: identity,
-        // Use environment variables for URLs
-        esploraUrl: process.env.REACT_APP_ESPLORA_URL,
-        arkServerUrl: process.env.REACT_APP_ARK_SERVER_URL,
-        arkServerPublicKey: process.env.REACT_APP_ARK_SERVER_PUBLIC_KEY
-      });
-
-      // Get wallet addresses
-      const addresses = walletInstance.getAddress();
-      
-      // Fetch initial balance
-      const balance = await walletInstance.getBalance();
-      
-      return { addresses, balance };
-    } catch (error) {
-      return rejectWithValue(error instanceof Error ? error.message : 'Failed to initialize wallet');
-    }
-  }
-);
-
-// Fetch wallet balance
-export const fetchWalletBalance = createAsyncThunk(
-  'arkWallet/fetchBalance',
-  async (_, { rejectWithValue }) => {
-    try {
-      if (!walletInstance) {
-        throw new Error('Wallet not initialized');
-      }
-      
-      const balance = await walletInstance.getBalance();
-      return balance;
-    } catch (error) {
-      return rejectWithValue(error instanceof Error ? error.message : 'Failed to fetch balance');
-    }
-  }
-);
-
-// Send bitcoin (on-chain or off-chain depending on the address)
-export const sendBitcoin = createAsyncThunk(
-  'arkWallet/sendBitcoin',
-  async (
-    { address, amount, feeRate }: { address: string; amount: number; feeRate?: number },
-    { rejectWithValue }
-  ) => {
-    try {
-      if (!walletInstance) {
-        throw new Error('Wallet not initialized');
-      }
-      
-      const txid = await walletInstance.sendBitcoin({
-        address,
-        amount,
-        feeRate
-      });
-      
-      return txid;
-    } catch (error) {
-      return rejectWithValue(error instanceof Error ? error.message : 'Failed to send bitcoin');
-    }
-  }
-);
-
-// Send bitcoin specifically via off-chain (Ark)
-export const sendOffchain = createAsyncThunk(
-  'arkWallet/sendOffchain',
-  async (
-    { address, amount, feeRate }: { address: string; amount: number; feeRate?: number },
-    { rejectWithValue }
-  ) => {
-    try {
-      if (!walletInstance) {
-        throw new Error('Wallet not initialized');
-      }
-      
-      const txid = await walletInstance.sendOffchain({
-        address,
-        amount,
-        feeRate
-      });
-      
-      return txid;
-    } catch (error) {
-      return rejectWithValue(error instanceof Error ? error.message : 'Failed to send off-chain transaction');
-    }
-  }
-);
-
-// Get wallet coins (UTXOs)
-export const getWalletCoins = createAsyncThunk(
-  'arkWallet/getCoins',
-  async (_, { rejectWithValue }) => {
-    try {
-      if (!walletInstance) {
-        throw new Error('Wallet not initialized');
-      }
-      
-      const coins = await walletInstance.getCoins();
-      return coins;
-    } catch (error) {
-      return rejectWithValue(error instanceof Error ? error.message : 'Failed to get coins');
-    }
-  }
-);
-
-// Get virtual coins (for Ark off-chain)
-export const getVirtualCoins = createAsyncThunk(
-  'arkWallet/getVirtualCoins',
-  async (_, { rejectWithValue }) => {
-    try {
-      if (!walletInstance) {
-        throw new Error('Wallet not initialized');
-      }
-      
-      const virtualCoins = await walletInstance.getVirtualCoins();
-      return virtualCoins;
-    } catch (error) {
-      return rejectWithValue(error instanceof Error ? error.message : 'Failed to get virtual coins');
-    }
-  }
-);
-
-// Clear wallet state (disconnect)
-export const disconnectWallet = createAsyncThunk(
-  'arkWallet/disconnect',
-  async (_, { dispatch }) => {
-    walletInstance = null;
-    return true;
-  }
-);
-
-// Create slice
+// Create the slice
 const arkWalletSlice = createSlice({
   name: 'arkWallet',
   initialState,
   reducers: {
-    clearWalletError: (state) => {
-      state.error = null;
+    // Add keys to the wallet
+    addUserKey: (state, action: PayloadAction<string>) => {
+      state.userKeys.push(action.payload);
+    },
+    // Remove keys from the wallet
+    removeUserKey: (state, action: PayloadAction<string>) => {
+      state.userKeys = state.userKeys.filter(key => key !== action.payload);
     },
   },
   extraReducers: (builder) => {
@@ -448,56 +305,88 @@ const arkWalletSlice = createSlice({
       state.error = null;
     });
     builder.addCase(initializeWallet.fulfilled, (state, action) => {
-      state.loading = false;
-      state.isInitialized = true;
       state.isConnected = true;
       state.addresses = action.payload.addresses;
       state.balance = action.payload.balance;
+      state.loading = false;
     });
     builder.addCase(initializeWallet.rejected, (state, action) => {
       state.loading = false;
       state.error = action.payload as string;
     });
-
-    // Fetch balance
+    
+    // Disconnect wallet
+    builder.addCase(disconnectWallet.pending, (state) => {
+      state.loading = true;
+      state.error = null;
+    });
+    builder.addCase(disconnectWallet.fulfilled, (state) => {
+      state.isConnected = false;
+      state.addresses = null;
+      state.balance = null;
+      state.loading = false;
+    });
+    builder.addCase(disconnectWallet.rejected, (state, action) => {
+      state.loading = false;
+      state.error = action.payload as string;
+    });
+    
+    // Fetch wallet balance
     builder.addCase(fetchWalletBalance.pending, (state) => {
       state.loading = true;
       state.error = null;
     });
     builder.addCase(fetchWalletBalance.fulfilled, (state, action) => {
-      state.loading = false;
       state.balance = action.payload;
+      state.loading = false;
     });
     builder.addCase(fetchWalletBalance.rejected, (state, action) => {
       state.loading = false;
       state.error = action.payload as string;
     });
-
-    // Send bitcoin (general case)
-    builder.addCase(sendBitcoin.pending, (state) => {
+    
+    // Common handlers for transaction actions
+    const handleTransactionPending = (state: ArkWalletState) => {
       state.loading = true;
       state.error = null;
-    });
-    builder.addCase(sendBitcoin.fulfilled, (state) => {
+    };
+    
+    const handleTransactionFulfilled = (state: ArkWalletState) => {
       state.loading = false;
-    });
-    builder.addCase(sendBitcoin.rejected, (state, action) => {
+    };
+    
+    const handleTransactionRejected = (state: ArkWalletState, action: PayloadAction<unknown>) => {
       state.loading = false;
       state.error = action.payload as string;
-    });
-
-    // Disconnect wallet
-    builder.addCase(disconnectWallet.fulfilled, (state) => {
-      state.isInitialized = false;
-      state.isConnected = false;
-      state.addresses = null;
-      state.balance = null;
-    });
+    };
+    
+    // Send Bitcoin (auto)
+    builder.addCase(sendBitcoin.pending, handleTransactionPending);
+    builder.addCase(sendBitcoin.fulfilled, handleTransactionFulfilled);
+    builder.addCase(sendBitcoin.rejected, handleTransactionRejected);
+    
+    // Send Bitcoin on-chain
+    builder.addCase(sendOnchain.pending, handleTransactionPending);
+    builder.addCase(sendOnchain.fulfilled, handleTransactionFulfilled);
+    builder.addCase(sendOnchain.rejected, handleTransactionRejected);
+    
+    // Send Bitcoin off-chain
+    builder.addCase(sendOffchain.pending, handleTransactionPending);
+    builder.addCase(sendOffchain.fulfilled, handleTransactionFulfilled);
+    builder.addCase(sendOffchain.rejected, handleTransactionRejected);
+    
+    // Sign transaction
+    builder.addCase(signTransaction.pending, handleTransactionPending);
+    builder.addCase(signTransaction.fulfilled, handleTransactionFulfilled);
+    builder.addCase(signTransaction.rejected, handleTransactionRejected);
+    
+    // Broadcast transaction
+    builder.addCase(broadcastTransaction.pending, handleTransactionPending);
+    builder.addCase(broadcastTransaction.fulfilled, handleTransactionFulfilled);
+    builder.addCase(broadcastTransaction.rejected, handleTransactionRejected);
   },
 });
 
-export const { clearWalletError } = arkWalletSlice.actions;
+// Export actions and reducer
+export const { addUserKey, removeUserKey } = arkWalletSlice.actions;
 export default arkWalletSlice.reducer;
-
-// Utility functions for working with wallet
-export const getWalletInstance = (): Wallet | null => walletInstance;
