@@ -25,7 +25,7 @@ services:
   frontend:
     build:
       context: ./frontend
-      dockerfile: Dockerfile.frontend  # We'll create a production Dockerfile
+      dockerfile: Dockerfile.frontend
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.frontend.rule=Host(`hashhedge.com`)"
@@ -70,10 +70,45 @@ services:
   bitcoin-node:
     image: ruimarinho/bitcoin-core:latest
     container_name: ${PROJECT_NAME}-bitcoin-node
+    command:
+      - "-signet"
+      - "-server"
+      - "-rpcallowip=0.0.0.0/0"
+      - "-rpcbind=0.0.0.0"
+      - "-rpcuser=bitcoin"
+      - "-rpcpassword=bitcoin"
     volumes:
       - bitcoin-data:/home/bitcoin/.bitcoin
+    ports:
+      - "38332:38332" # Signet RPC port
+      - "38333:38333" # Signet P2P port
     networks:
       - hashhedge-network
+    restart: unless-stopped
+
+  aspd:
+    build:
+      context: ./hashhedge-bark/
+      dockerfile: Dockerfile.aspd
+    container_name: ${PROJECT_NAME}-aspd
+    depends_on:
+      - postgres
+      - bitcoin-node
+    environment:
+      - POSTGRES_USER=hashhedge
+      - POSTGRES_PASSWORD=hashhedge_secret
+      - POSTGRES_DB=hashhedge
+      - POSTGRES_HOST=postgres
+      - BITCOIN_RPC_HOST=bitcoin-node
+      - BITCOIN_RPC_PORT=38332
+      - BITCOIN_RPC_USER=bitcoin
+      - BITCOIN_RPC_PASSWORD=bitcoin
+      - BITCOIN_NETWORK=signet
+    volumes:
+      - aspd-data:/data
+    networks:
+      - hashhedge-network
+    restart: unless-stopped
 
 networks:
   hashhedge-network:
@@ -82,3 +117,4 @@ networks:
 volumes:
   postgres-data:
   bitcoin-data:
+  aspd-data:

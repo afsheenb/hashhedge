@@ -1,0 +1,3 @@
+[submodule "hashhedge-bark"]
+	path = hashhedge-bark
+	url = https://github.com/afsheenb/hashhedge-bark

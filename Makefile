@@ -74,6 +74,16 @@ test: ## Run tests for all services
 ifeq ($(INSIDE_DOCKER_CONTAINER), 0)
 	@docker-compose -f docker-compose.yml run --rm backend go test ./...
 	@docker-compose -f docker-compose.yml run --rm frontend npm test
+	@docker-compose -f docker-compose.yml run --rm aspd just test
+else
+	@echo "This command is for host machine only"
+endif
+
+# Test aspd specific tests
+test-aspd: ## Run tests for aspd
+ifeq ($(INSIDE_DOCKER_CONTAINER), 0)
+	@docker-compose -f docker-compose.yml run --rm aspd just test-unit
+	@docker-compose -f docker-compose.yml run --rm aspd just test-integration
 else
 	@echo "This command is for host machine only"
 endif
@@ -87,4 +97,4 @@ else
 	@echo "This command is for host machine only"
 endif
 
-.PHONY: help build start stop restart rebuild-% ssh-% logs-% test clean
+.PHONY: help build start stop restart rebuild-% ssh-% logs-% test test-aspd clean
