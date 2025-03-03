@@ -22,8 +22,25 @@ import {
   Progress,
   Code,
   Link,
+  Flex,
+  Accordion,
+  AccordionItem,
+  AccordionButton,
+  AccordionPanel,
+  AccordionIcon,
+  Heading,
+  Badge,
+  HStack,
 } from '@chakra-ui/react';
-import { CheckCircleIcon, ExternalLinkIcon, WarningIcon } from '@chakra-ui/icons';
+import { 
+  CheckCircleIcon, 
+  ExternalLinkIcon, 
+  WarningIcon, 
+  InfoIcon,
+  DownloadIcon,
+  LockIcon,
+  UnlockIcon
+} from '@chakra-ui/icons';
 import { useAppDispatch, useAppSelector } from '../../hooks/redux-hooks';
 import {
   initializeWallet,
@@ -31,6 +48,8 @@ import {
   fetchWalletBalance,
   reconnectWallet,
   checkTransactionStatus,
+  executeEmergencyExit,
+  downloadExitTransactions,
 } from '../../features/wallet/arkWalletSlice';
 
 // Custom component to handle wallet connection, reconnection, and error recovery
@@ -43,11 +62,13 @@ const WalletIntegration: React.FC = () => {
     connectionStatus,
     pendingTransactions,
     reconnectAttempts,
+    exitInfo,
   } = useAppSelector((state) => state.arkWallet);
   
   const [isReconnecting, setIsReconnecting] = useState(false);
   const [hasConnectionDropped, setHasConnectionDropped] = useState(false);
   const [networkStatus, setNetworkStatus] = useState<'online' | 'offline'>('online');
+  const [isEmergencyExiting, setIsEmergencyExiting] = useState(false);
   
   const toast = useToast();
   const { 
@@ -61,6 +82,24 @@ const WalletIntegration: React.FC = () => {
     onOpen: openTransactionModal, 
     onClose: closeTransactionModal 
   } = useDisclosure();
+  
+  const {
+    isOpen: isEmergencyModalOpen,
+    onOpen: openEmergencyModal,
+    onClose: closeEmergencyModal
+  } = useDisclosure();
+  
+  // Format date utility
+  const formatDate = (timestamp: number | string | undefined) => {
+    if (!timestamp) return 'Unknown';
+    const date = new Date(timestamp);
+    return date.toLocaleString();
+  };
+  
+  // Calculate if timelock is expired
+  const isTimelockExpired = exitInfo?.timelockExpiry 
+    ? new Date(exitInfo.timelockExpiry) <= new Date() 
+    : false;
   
   // Network status monitoring
   useEffect(() => {
@@ -199,6 +238,60 @@ const WalletIntegration: React.FC = () => {
     }
   };
   
+  // Handle emergency exit
+  const handleEmergencyExit = async () => {
+    setIsEmergencyExiting(true);
+    
+    try {
+      const txid = await dispatch(executeEmergencyExit({ 
+        feeRate: 5, // Default to 5 sat/vB
+      })).unwrap();
+      
+      toast({
+        title: 'Emergency exit initiated',
+        description: `Your funds are being withdrawn. Transaction ID: ${txid}`,
+        status: 'success',
+        duration: 5000,
+        isClosable: true,
+      });
+      
+      closeEmergencyModal();
+    } catch (err) {
+      toast({
+        title: 'Emergency exit failed',
+        description: err instanceof Error ? err.message : 'Unknown error',
+        status: 'error',
+        duration: 5000,
+        isClosable: true,
+      });
+    } finally {
+      setIsEmergencyExiting(false);
+    }
+  };
+  
+  // Handle downloading exit transactions
+  const handleDownloadExitTx = async () => {
+    try {
+      await dispatch(downloadExitTransactions()).unwrap();
+      
+      toast({
+        title: 'Exit transactions downloaded',
+        description: 'Save these files in a secure location for emergency use',
+        status: 'success',
+        duration: 3000,
+        isClosable: true,
+      });
+    } catch (err) {
+      toast({
+        title: 'Download failed',
+        description: err instanceof Error ? err.message : 'Unknown error',
+        status: 'error',
+        duration: 5000,
+        isClosable: true,
+      });
+    }
+  };
+  
   // Check pending transactions
   const handleCheckPendingTransactions = () => {
     if (pendingTransactions.length > 0) {
@@ -283,6 +376,113 @@ const WalletIntegration: React.FC = () => {
   return (
     <Box>
       {renderConnectionStatus()}
+      
+      {/* Emergency Exit Panel */}
+      {isConnected && exitInfo && (
+        <Box mt={4} p={4} borderWidth="1px" borderRadius="lg" borderColor="orange.300">
+          <Flex justify="space-between" align="center" mb={3}>
+            <Heading size="sm">Exit Protection Status</Heading>
+            <Badge 
+              colorScheme={isTimelockExpired ? "green" : exitInfo.hasPreSignedExit ? "yellow" : "red"}
+              fontSize="sm"
+              px={2}
+              py={1}
+            >
+              {isTimelockExpired 
+                ? "Fully Unlocked" 
+                : exitInfo.hasPreSignedExit 
+                  ? "Protected" 
+                  : "Limited"}
+            </Badge>
+          </Flex>
+          
+          <VStack align="stretch" spacing={3}>
+            <HStack>
+              <Icon 
+                as={exitInfo.hasPreSignedExit ? CheckCircleIcon : WarningIcon} 
+                color={exitInfo.hasPreSignedExit ? "green.500" : "orange.500"} 
+              />
+              <Text fontSize="sm">
+                Pre-signed Exit Transaction: {exitInfo.hasPreSignedExit ? "Available" : "Not Available"}
+              </Text>
+            </HStack>
+            
+            <HStack>
+              <Icon 
+                as={isTimelockExpired ? UnlockIcon : LockIcon} 
+                color={isTimelockExpired ? "green.500" : "yellow.500"} 
+              />
+              <Text fontSize="sm">
+                Timelock Path: {isTimelockExpired ? "Unlocked" : "Locked until " + formatDate(exitInfo.timelockExpiry)}
+              </Text>
+            </HStack>
+            
+            <Flex justify="space-between" mt={2}>
+              <Button 
+                size="sm" 
+                colorScheme="orange" 
+                leftIcon={<WarningIcon />}
+                onClick={openEmergencyModal}
+                isDisabled={!exitInfo.hasPreSignedExit && !isTimelockExpired}
+              >
+                Emergency Exit
+              </Button>
+              
+              <Button 
+                size="sm" 
+                leftIcon={<DownloadIcon />}
+                onClick={handleDownloadExitTx}
+                isDisabled={!exitInfo.hasPreSignedExit}
+              >
+                Download Exit Files
+              </Button>
+            </Flex>
+          </VStack>
+        </Box>
+      )}
+      
+      {/* Security Explainer Accordion */}
+      {isConnected && (
+        <Accordion allowToggle mt={4}>
+          <AccordionItem>
+            <h2>
+              <AccordionButton>
+                <Box flex="1" textAlign="left" fontWeight="medium">
+                  How Your Funds Are Protected
+                </Box>
+                <AccordionIcon />
+              </AccordionButton>
+            </h2>
+            <AccordionPanel pb={4}>
+              <VStack align="stretch" spacing={3}>
+                <Text>
+                  HashHedge uses cryptographic guarantees to ensure you always maintain control of your funds:
+                </Text>
+                <Box>
+                  <Text fontWeight="bold">1. Pre-signed Exit Transactions</Text>
+                  <Text>When you deposit, we create and sign an exit transaction you can broadcast any time.</Text>
+                </Box>
+                <Box>
+                  <Text fontWeight="bold">2. Timelock Escape Paths</Text>
+                  <Text>After the timelock expires, you can withdraw funds even without HashHedge's cooperation.</Text>
+                </Box>
+                <Box>
+                  <Text fontWeight="bold">3. Automated Recovery</Text>
+                  <Text>Our system monitors for expired contracts and automatically attempts recovery.</Text>
+                </Box>
+                <Link 
+                  href="/security" 
+                  color="blue.500"
+                  display="inline-flex"
+                  alignItems="center"
+                >
+                  Learn more about our security model <ExternalLinkIcon mx="2px" />
+                </Link>
+              </VStack>
+            </AccordionPanel>
+          </AccordionItem>
+        </Accordion>
+      )}
       
       {/* Error Modal for recovery options */}
       <Modal isOpen={isErrorModalOpen} onClose={closeErrorModal}>
@@ -389,6 +589,105 @@ const WalletIntegration: React.FC = () => {
           <ModalFooter>
             <Button onClick={closeTransactionModal}>
               Close
+            </Button>
+          </ModalFooter>
+        </ModalContent>
+      </Modal>
+      
+      {/* Emergency Exit Modal */}
+      <Modal isOpen={isEmergencyModalOpen} onClose={closeEmergencyModal} size="lg">
+        <ModalOverlay />
+        <ModalContent>
+          <ModalHeader>Emergency Exit Confirmation</ModalHeader>
+          <ModalCloseButton />
+          <ModalBody>
+            <VStack align="stretch" spacing={4}>
+              <Alert status="warning" variant="solid">
+                <AlertIcon />
+                <Box>
+                  <AlertTitle>Emergency Exit</AlertTitle>
+                  <AlertDescription>
+                    You are about to initiate an emergency withdrawal of your funds.
+                    This should only be used in exceptional circumstances.
+                  </AlertDescription>
+                </Box>
+              </Alert>
+              
+              <Box p={4} borderWidth="1px" borderRadius="md" borderColor="orange.300">
+                <Heading size="sm" mb={3}>What Will Happen</Heading>
+                <VStack align="start" spacing={2}>
+                  <HStack>
+                    <Icon as={WarningIcon} color="orange.500" />
+                    <Text>All your funds will be withdrawn to your on-chain address</Text>
+                  </HStack>
+                  <HStack>
+                    <Icon as={WarningIcon} color="orange.500" />
+                    <Text>Any active contracts will be terminated</Text>
+                  </HStack>
+                  <HStack>
+                    <Icon as={WarningIcon} color="orange.500" />
+                    <Text>This action cannot be reversed</Text>
+                  </HStack>
+                </VStack>
+              </Box>
+              
+              <Text>
+                HashHedge guarantees you can always withdraw your funds. We've implemented
+                multiple exit paths to ensure you maintain control at all times:
+              </Text>
+              
+              <Box>
+                {exitInfo?.hasPreSignedExit && (
+                  <Alert status="success" mb={2}>
+                    <AlertIcon />
+                    <Box>
+                      <AlertTitle>Pre-signed Exit Transaction</AlertTitle>
+                      <AlertDescription>
+                        A transaction was created and pre-signed during onboarding to guarantee
+                        you can exit anytime.
+                      </AlertDescription>
+                    </Box>
+                  </Alert>
+                )}
+                
+                {isTimelockExpired ? (
+                  <Alert status="success">
+                    <AlertIcon />
+                    <Box>
+                      <AlertTitle>Timelock Path Active</AlertTitle>
+                      <AlertDescription>
+                        Your timelock has expired. You can unilaterally withdraw your funds
+                        using just your key.
+                      </AlertDescription>
+                    </Box>
+                  </Alert>
+                ) : (
+                  <Alert status="info">
+                    <AlertIcon />
+                    <Box>
+                      <AlertTitle>Timelock Path</AlertTitle>
+                      <AlertDescription>
+                        After {formatDate(exitInfo?.timelockExpiry)}, you will be able to
+                        unilaterally withdraw your funds even without HashHedge's cooperation.
+                      </AlertDescription>
+                    </Box>
+                  </Alert>
+                )}
+              </Box>
+            </VStack>
+          </ModalBody>
+          <ModalFooter>
+            <Button variant="ghost" mr={3} onClick={closeEmergencyModal}>
+              Cancel
+            </Button>
+            <Button
+              colorScheme="orange"
+              onClick={handleEmergencyExit}
+              isLoading={isEmergencyExiting}
+              loadingText="Processing"
+              isDisabled={!exitInfo?.hasPreSignedExit && !isTimelockExpired}
+            >
+              Confirm Emergency Exit
             </Button>
           </ModalFooter>
         </ModalContent>

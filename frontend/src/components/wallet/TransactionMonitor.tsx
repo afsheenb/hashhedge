@@ -35,6 +35,12 @@ import {
   ModalBody,
   ModalCloseButton,
   ModalFooter,
+  Tabs,
+  TabList,
+  TabPanels,
+  Tab,
+  TabPanel,
+  HStack,
 } from '@chakra-ui/react';
 import { 
   ChevronDownIcon, 
@@ -44,6 +50,8 @@ import {
   WarningIcon,
   CheckCircleIcon,
   TimeIcon,
+  CloseIcon,
+  DownloadIcon,
 } from '@chakra-ui/icons';
 import { useAppDispatch, useAppSelector } from '../../hooks/redux-hooks';
 import { 
@@ -51,11 +59,13 @@ import {
   retryTransaction, 
   clearFailedTransaction,
   fetchTransactionHistory,
+  broadcastEmergencyTransaction,
+  downloadExitTransactions,
 } from '../../features/wallet/arkWalletSlice';
 
 interface Transaction {
   id: string;
-  type: 'send' | 'receive' | 'contract';
+  type: 'send' | 'receive' | 'contract' | 'emergency-exit';
   amount: number;
   fee: number;
   status: 'pending' | 'confirmed' | 'failed';
@@ -64,12 +74,14 @@ interface Transaction {
   address: string;
   recovery_attempts?: number;
   error_message?: string;
+  is_exit_tx?: boolean;
 }
 
 const TransactionMonitor: React.FC = () => {
   const [selectedTx, setSelectedTx] = useState<Transaction | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [expandedTxId, setExpandedTxId] = useState<string | null>(null);
+  const [selectedExitTx, setSelectedExitTx] = useState<string | null>(null);
   
   const dispatch = useAppDispatch();
   const toast = useToast();
@@ -78,13 +90,20 @@ const TransactionMonitor: React.FC = () => {
   const { 
     pendingTransactions, 
     failedTransactions, 
-    transactionHistory 
+    transactionHistory,
+    exitTransactions, 
   } = useAppSelector((state) => state.arkWallet);
   
   const { 
     isOpen: isRetryModalOpen, 
     onOpen: openRetryModal, 
     onClose: closeRetryModal 
+  } = useDisclosure();
+  
+  const {
+    isOpen: isExitTxModalOpen,
+    onOpen: openExitTxModal,
+    onClose: closeExitTxModal
   } = useDisclosure();
   
   // Fetch transaction history on component mount
@@ -172,10 +191,70 @@ const TransactionMonitor: React.FC = () => {
     }
   };
   
+  // Handle emergency exit transaction broadcast
+  const handleBroadcastExitTx = async () => {
+    if (!selectedExitTx) return;
+    
+    setIsLoading(true);
+    
+    try {
+      const txid = await dispatch(broadcastEmergencyTransaction(selectedExitTx)).unwrap();
+      
+      toast({
+        title: 'Emergency exit transaction broadcast',
+        description: `Transaction ID: ${txid}`,
+        status: 'success',
+        duration: 5000,
+        isClosable: true,
+      });
+      
+      closeExitTxModal();
+    } catch (err) {
+      toast({
+        title: 'Broadcast failed',
+        description: err.message || 'Unable to broadcast exit transaction',
+        status: 'error',
+        duration: 5000,
+        isClosable: true,
+      });
+    } finally {
+      setIsLoading(false);
+    }
+  };
+  
+  // Handle downloading exit transactions
+  const handleDownloadExitTx = async () => {
+    try {
+      await dispatch(downloadExitTransactions()).unwrap();
+      
+      toast({
+        title: 'Exit transactions downloaded',
+        description: 'Save these files in a secure location for emergency use',
+        status: 'success',
+        duration: 3000,
+        isClosable: true,
+      });
+    } catch (err) {
+      toast({
+        title: 'Download failed',
+        description: err.message || 'Unable to download exit transactions',
+        status: 'error',
+        duration: 5000,
+        isClosable: true,
+      });
+    }
+  };
+  
   // Prepare the retry modal for a specific transaction
   const prepareRetryModal = (tx: Transaction) => {
     setSelectedTx(tx);
     openRetryModal();
+  };
+  
+  // Prepare the exit transaction modal
+  const prepareExitTxModal = (txId: string) => {
+    setSelectedExitTx(txId);
+    openExitTxModal();
   };
   
   // Get status badge color
@@ -199,6 +278,7 @@ const TransactionMonitor: React.FC = () => {
   const renderTransactionStatus = () => {
     const pendingCount = pendingTransactions.length;
     const failedCount = failedTransactions.length;
+    const exitTxCount = exitTransactions.length;
     
     if (pendingCount === 0 && failedCount === 0) {
       return (
@@ -239,6 +319,21 @@ const TransactionMonitor: React.FC = () => {
             </Box>
           </Alert>
         )}
+        
+        {exitTxCount > 0 && (
+          <Alert status="warning" variant="left-accent">
+            <AlertIcon />
+            <Box>
+              <AlertTitle>{exitTxCount} Emergency Exit Transaction{exitTxCount !== 1 ? 's' : ''} Available</AlertTitle>
+              <AlertDescription>
+                These pre-signed transactions can be used to recover your funds if needed.
+              </AlertDescription>
+            </Box>
+            <Button size="sm" ml={2} onClick={handleDownloadExitTx} leftIcon={<DownloadIcon />}>
+              Download
+            </Button>
+          </Alert>
+        )}
       </VStack>
     );
   };
@@ -253,6 +348,7 @@ const TransactionMonitor: React.FC = () => {
         <TabList>
           <Tab>Pending ({pendingTransactions.length})</Tab>
           <Tab>Failed ({failedTransactions.length})</Tab>
+          <Tab>Emergency Exits ({exitTransactions.length})</Tab>
           <Tab>History</Tab>
         </TabList>
         
@@ -293,7 +389,9 @@ const TransactionMonitor: React.FC = () => {
                           </Td>
                           <Td fontFamily="mono" fontSize="xs">{tx.id.substring(0, 10)}...</Td>
                           <Td>
-                            <Badge>{tx.type}</Badge>
+                            <Badge colorScheme={tx.is_exit_tx ? "orange" : undefined}>
+                              {tx.type}
+                            </Badge>
                           </Td>
                           <Td>{formatAmount(tx.amount)}</Td>
                           <Td>
@@ -328,6 +426,14 @@ const TransactionMonitor: React.FC = () => {
                                 <Text fontSize="sm" mb={1}>Address: {tx.address}</Text>
                                 <Text fontSize="sm" mb={1}>Fee: {formatAmount(tx.fee)}</Text>
                                 <Text fontSize="sm">Confirmations: {tx.confirmations}</Text>
+                                {tx.is_exit_tx && (
+                                  <Alert status="warning" size="sm" mt={2}>
+                                    <AlertIcon />
+                                    <Text fontSize="sm">
+                                      This is an emergency exit transaction. It will withdraw all your funds to your on-chain address.
+                                    </Text>
+                                  </Alert>
+                                )}
                                 <Flex mt={2}>
                                   <Link 
                                     href={`https://mempool.space/tx/${tx.id}`} 
@@ -385,7 +491,9 @@ const TransactionMonitor: React.FC = () => {
                           </Td>
                           <Td fontFamily="mono" fontSize="xs">{tx.id.substring(0, 10)}...</Td>
                           <Td>
-                            <Badge>{tx.type}</Badge>
+                            <Badge colorScheme={tx.is_exit_tx ? "orange" : undefined}>
+                              {tx.type}
+                            </Badge>
                           </Td>
                           <Td>{formatAmount(tx.amount)}</Td>
                           <Td>
@@ -452,11 +560,103 @@ const TransactionMonitor: React.FC = () => {
                             </Collapse>
                           </Td>
                         </Tr>
+                              {tx.is_exit_tx && (
+                                  <Alert status="warning" size="sm" mt={2}>
+                                    <AlertIcon />
+                                    <Text fontSize="sm">
+                                      This is an emergency exit transaction. Consider trying again or using a different exit method.
+                                    </Text>
+                                  </Alert>
+                                )}
+                              </Box>
+                            </Collapse>
+                          </Td>
+                        </Tr>
                       </React.Fragment>
                     ))
                 )}
               </Tbody>
             </Table>
+          </TabPanel>
+          
+          {/* Emergency Exit Transactions Tab */}
+          <TabPanel px={0} py={4}>
+            <VStack align="stretch" spacing={4}>
+              <Alert status="info" variant="left-accent">
+                <AlertIcon />
+                <Box>
+                  <AlertTitle>Emergency Exit Transactions</AlertTitle>
+                  <AlertDescription>
+                    These are pre-signed transactions that can withdraw your funds at any time.
+                    Use them if HashHedge services become unavailable or you need immediate access to your funds.
+                  </AlertDescription>
+                </Box>
+              </Alert>
+              
+              <Button
+                leftIcon={<DownloadIcon />}
+                colorScheme="blue"
+                onClick={handleDownloadExitTx}
+                mb={3}
+              >
+                Download All Exit Transactions
+              </Button>
+              
+              <Table variant="simple" size="sm">
+                <Thead>
+                  <Tr>
+                    <Th>Transaction ID</Th>
+                    <Th>Amount</Th>
+                    <Th>Destination</Th>
+                    <Th>Created</Th>
+                    <Th>Actions</Th>
+                  </Tr>
+                </Thead>
+                <Tbody>
+                  {exitTransactions.length === 0 ? (
+                    <Tr>
+                      <Td colSpan={5} textAlign="center">No emergency exit transactions available</Td>
+                    </Tr>
+                  ) : (
+                    exitTransactions.map((exitTx) => (
+                      <Tr key={exitTx.id}>
+                        <Td fontFamily="mono" fontSize="xs">{exitTx.id.substring(0, 10)}...</Td>
+                        <Td>{formatAmount(exitTx.amount)}</Td>
+                        <Td fontFamily="mono" fontSize="xs">{exitTx.address.substring(0, 10)}...</Td>
+                        <Td>{new Date(exitTx.created).toLocaleString()}</Td>
+                        <Td>
+                          <Button
+                            size="xs"
+                            colorScheme="orange"
+                            onClick={() => prepareExitTxModal(exitTx.id)}
+                          >
+                            Broadcast
+                          </Button>
+                        </Td>
+                      </Tr>
+                    ))
+                  )}
+                </Tbody>
+              </Table>
+              
+              <Alert status="warning" mt={2}>
+                <AlertIcon />
+                <Box>
+                  <AlertTitle>When to use emergency exits</AlertTitle>
+                  <Text fontSize="sm">
+                    Only broadcast these transactions in emergency situations when:
+                  </Text>
+                  <VStack align="start" mt={2} spacing={1} pl={4}>
+                    <Text fontSize="sm">• HashHedge services are unavailable</Text>
+                    <Text fontSize="sm">• You need immediate access to your funds</Text>
+                    <Text fontSize="sm">• Normal withdrawal methods aren't working</Text>
+                  </VStack>
+                  <Text fontSize="sm" mt={2}>
+                    Broadcasting these transactions will withdraw all your funds to your on-chain address.
+                  </Text>
+                </Box>
+              </Alert>
+            </VStack>
           </TabPanel>
           
           {/* Transaction History Tab */}
@@ -495,7 +695,9 @@ const TransactionMonitor: React.FC = () => {
                           </Td>
                           <Td fontFamily="mono" fontSize="xs">{tx.id.substring(0, 10)}...</Td>
                           <Td>
-                            <Badge>{tx.type}</Badge>
+                            <Badge colorScheme={tx.is_exit_tx ? "orange" : undefined}>
+                              {tx.type}
+                            </Badge>
                           </Td>
                           <Td>{formatAmount(tx.amount)}</Td>
                           <Td>
@@ -527,6 +729,14 @@ const TransactionMonitor: React.FC = () => {
                                 <Text fontSize="sm" mb={1}>Address: {tx.address}</Text>
                                 <Text fontSize="sm" mb={1}>Fee: {formatAmount(tx.fee)}</Text>
                                 <Text fontSize="sm">Confirmations: {tx.confirmations}</Text>
+                                {tx.is_exit_tx && (
+                                  <Alert status="info" size="sm" mt={2}>
+                                    <AlertIcon />
+                                    <Text fontSize="sm">
+                                      This was an emergency exit transaction.
+                                    </Text>
+                                  </Alert>
+                                )}
                               </Box>
                             </Collapse>
                           </Td>
@@ -603,6 +813,64 @@ const TransactionMonitor: React.FC = () => {
               isDisabled={!selectedTx || selectedTx.recovery_attempts >= 3}
             >
               Retry Transaction
+            </Button>
+          </ModalFooter>
+        </ModalContent>
+      </Modal>
+      
+      {/* Emergency Exit Transaction Modal */}
+      <Modal isOpen={isExitTxModalOpen} onClose={closeExitTxModal} size="lg">
+        <ModalOverlay />
+        <ModalContent>
+          <ModalHeader>Broadcast Emergency Exit Transaction</ModalHeader>
+          <ModalCloseButton />
+          <ModalBody>
+            <VStack spacing={4} align="stretch">
+              <Alert status="warning" variant="solid">
+                <AlertIcon />
+                <Box>
+                  <AlertTitle>Emergency Exit</AlertTitle>
+                  <AlertDescription>
+                    This will initiate an emergency withdrawal of your funds to your on-chain
+                    Bitcoin address. Only use this in emergency situations.
+                  </AlertDescription>
+                </Box>
+              </Alert>
+              
+              <Box p={4} borderWidth="1px" borderRadius="md" borderColor="orange.300" bg={colorMode === "light" ? "orange.50" : "orange.900"}>
+                <Heading size="sm" mb={3}>Confirmation Required</Heading>
+                <Text fontSize="sm">
+                  By broadcasting this transaction, you are initiating an emergency exit from the
+                  HashHedge platform. This will:
+                </Text>
+                <VStack align="start" mt={2} spacing={1} pl={4}>
+                  <Text fontSize="sm">• Withdraw all your available funds</Text>
+                  <Text fontSize="sm">• Send them to your on-chain Bitcoin address</Text>
+                  <Text fontSize="sm">• Terminate active contracts</Text>
+                  <Text fontSize="sm">• Cannot be cancelled once broadcast</Text>
+                </VStack>
+              </Box>
+              
+              <Alert status="info">
+                <AlertIcon />
+                <Text fontSize="sm">
+                  This transaction was pre-signed during the onboarding process to guarantee
+                  you can always recover your funds, even without HashHedge's cooperation.
+                </Text>
+              </Alert>
+            </VStack>
+          </ModalBody>
+          <ModalFooter>
+            <Button variant="ghost" mr={3} onClick={closeExitTxModal}>
+              Cancel
+            </Button>
+            <Button
+              colorScheme="orange"
+              onClick={handleBroadcastExitTx}
+              isLoading={isLoading}
+              loadingText="Broadcasting"
+            >
+              Confirm Emergency Exit
             </Button>
           </ModalFooter>
         </ModalContent>

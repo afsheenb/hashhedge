@@ -41,14 +41,35 @@ import {
   Spinner,
   useClipboard,
   IconButton,
+  Heading,
+  Badge,
+  useDisclosure,
+  Modal,
+  ModalOverlay,
+  ModalContent,
+  ModalHeader,
+  ModalBody,
+  ModalCloseButton,
+  ModalFooter,
 } from '@chakra-ui/react';
-import { CopyIcon, CheckIcon, InfoIcon, ExternalLinkIcon } from '@chakra-ui/icons';
+import { 
+  CopyIcon, 
+  CheckIcon, 
+  InfoIcon, 
+  ExternalLinkIcon, 
+  WarningIcon,
+  DownloadIcon,
+  LockIcon,
+  UnlockIcon
+} from '@chakra-ui/icons';
 import { useAppDispatch, useAppSelector } from '../../hooks/redux-hooks';
 import {
   sendBitcoin,
   sendOnchain,
   sendOffchain,
   fetchWalletBalance,
+  executeEmergencyExit,
+  downloadExitTransactions,
 } from '../../features/wallet/arkWalletSlice';
 import QRCode from 'qrcode.react';
 
@@ -87,10 +108,23 @@ const DepositWithdraw: React.FC = () => {
   const [selectedFeeRate, setSelectedFeeRate] = useState<number>(5); // Default to standard fee
   const [isProcessing, setIsProcessing] = useState(false);
   const [transactionId, setTransactionId] = useState<string | null>(null);
+  const [isEmergencyExiting, setIsEmergencyExiting] = useState(false);
+  
+  const {
+    isOpen: isEmergencyModalOpen,
+    onOpen: openEmergencyModal,
+    onClose: closeEmergencyModal
+  } = useDisclosure();
   
   const dispatch = useAppDispatch();
   const toast = useToast();
-  const { isConnected, addresses, balance, loading } = useAppSelector((state) => state.arkWallet);
+  const { 
+    isConnected, 
+    addresses, 
+    balance, 
+    loading, 
+    exitInfo 
+  } = useAppSelector((state) => state.arkWallet);
   
   // QR code value
   const depositQrValue = addresses ? 
@@ -99,6 +133,18 @@ const DepositWithdraw: React.FC = () => {
   // Copy functionality for addresses
   const { hasCopied: hasOnchainCopied, onCopy: onCopyOnchain } = useClipboard(addresses?.onchain || '');
   const { hasCopied: hasOffchainCopied, onCopy: onCopyOffchain } = useClipboard(addresses?.offchain || '');
+  
+  // Calculate if timelock is expired
+  const isTimelockExpired = exitInfo?.timelockExpiry 
+    ? new Date(exitInfo.timelockExpiry) <= new Date() 
+    : false;
+  
+  // Format date utility
+  const formatDate = (timestamp: number | string | undefined) => {
+    if (!timestamp) return 'Unknown';
+    const date = new Date(timestamp);
+    return date.toLocaleString();
+  };
   
   // Fee calculations
   const calculateFee = (size: number = 225): number => { // Default to 225 bytes for a simple transaction
@@ -167,7 +213,7 @@ const DepositWithdraw: React.FC = () => {
     
     const totalNeeded = withdrawAmount + calculatedFee;
     
-if (!balance || totalNeeded > balance.available) {
+    if (!balance || totalNeeded > balance.available) {
       setAmountError(`Insufficient balance. Need ${totalNeeded} sats (including ${calculatedFee} sats fee)`);
       return;
     }
@@ -224,6 +270,64 @@ if (!balance || totalNeeded > balance.available) {
     }
   };
   
+  // Handle emergency exit
+  const handleEmergencyExit = async () => {
+    setIsEmergencyExiting(true);
+    
+    try {
+      const txid = await dispatch(executeEmergencyExit({
+        feeRate: selectedFeeRate,
+        address: withdrawAddress || addresses?.onchain || '',
+      })).unwrap();
+      
+      toast({
+        title: 'Emergency exit initiated',
+        description: `Transaction ID: ${txid}`,
+        status: 'success',
+        duration: 5000,
+        isClosable: true,
+      });
+      
+      setTransactionId(txid);
+      closeEmergencyModal();
+      
+      // Refresh balance
+      dispatch(fetchWalletBalance());
+    } catch (err) {
+      toast({
+        title: 'Emergency exit failed',
+        description: err instanceof Error ? err.message : 'Unknown error',
+        status: 'error',
+        duration: 5000,
+        isClosable: true,
+      });
+    } finally {
+      setIsEmergencyExiting(false);
+    }
+  };
+  
+  const handleDownloadExitTx = async () => {
+    try {
+      await dispatch(downloadExitTransactions()).unwrap();
+      
+      toast({
+        title: 'Exit transactions downloaded',
+        description: 'Save these files in a secure location for emergency use',
+        status: 'success',
+        duration: 5000,
+        isClosable: true,
+      });
+    } catch (err) {
+      toast({
+        title: 'Download failed',
+        description: err instanceof Error ? err.message : 'Unknown error',
+        status: 'error',
+        duration: 5000,
+        isClosable: true,
+      });
+    }
+  };
+  
   // Reset withdrawal form
   const resetWithdrawalForm = () => {
     setWithdrawAddress('');
@@ -267,6 +371,9 @@ if (!balance || totalNeeded > balance.available) {
           </Tab>
           <Tab _selected={{ color: "blue.500", borderColor: "blue.500", borderBottomColor: "transparent" }}>
             Withdraw
+          </Tab>
+          <Tab _selected={{ color: "red.500", borderColor: "red.500", borderBottomColor: "transparent" }}>
+            Emergency Exit
           </Tab>
         </TabList>
         <TabPanels>
@@ -547,8 +654,192 @@ if (!balance || totalNeeded > balance.available) {
               )}
             </VStack>
           </TabPanel>
+          
+          {/* Emergency Exit Panel */}
+          <TabPanel px={5} py={4}>
+            <VStack align="stretch" spacing={4}>
+              <Alert status="warning" variant="left-accent">
+                <AlertIcon />
+                <Box>
+                  <AlertTitle>Emergency Withdrawal Options</AlertTitle>
+                  <AlertDescription>
+                    These options allow you to recover funds even if HashHedge services are disrupted.
+                    They use pre-signed transactions or timelock-based recovery methods.
+                  </AlertDescription>
+                </Box>
+              </Alert>
+              
+              {/* Timelock Status */}
+              <Box p={4} borderWidth="1px" borderRadius="md" borderColor="orange.300" bg={colorMode === "light" ? "orange.50" : "orange.900"}>
+                <Heading size="sm" mb={3}>Timelock Status</Heading>
+                <HStack>
+                  <Text>Unilateral exit available:</Text>
+                  <Text fontWeight="medium">
+                    {exitInfo?.timelockExpiry ? formatDate(exitInfo.timelockExpiry) : 'Unknown'}
+                  </Text>
+                  <Badge colorScheme={isTimelockExpired ? "green" : "orange"}>
+                    {isTimelockExpired ? "Available Now" : "Not Yet Available"}
+                  </Badge>
+                </HStack>
+                <HStack mt={2}>
+                  <Icon as={isTimelockExpired ? UnlockIcon : LockIcon} color={isTimelockExpired ? "green.500" : "orange.500"} />
+                  <Text fontSize="sm">
+                    {isTimelockExpired 
+                      ? "Your funds can be unilaterally withdrawn using the timelock path" 
+                      : "The timelock path will become available at the date shown above"}
+                  </Text>
+                </HStack>
+              </Box>
+              
+              {/* Exit Options */}
+              <Box p={4} borderWidth="1px" borderRadius="md">
+                <Heading size="sm" mb={3}>Exit Options</Heading>
+                <VStack spacing={4} align="stretch">
+                  {/* Pre-signed Exit Transaction */}
+                  <Box>
+                    <HStack mb={2}>
+                      <Text fontWeight="medium">1. Use Pre-signed Exit Transaction</Text>
+                      <Badge colorScheme="green">Always Available</Badge>
+                    </HStack>
+                    <Text fontSize="sm" mb={3}>
+                      When you deposit, a pre-signed exit transaction is created. You can broadcast 
+                      this transaction at any time to withdraw your funds to your on-chain address.
+                    </Text>
+                    <Button
+                      colorScheme="orange"
+                      leftIcon={<WarningIcon />}
+                      onClick={openEmergencyModal}
+                      isDisabled={!exitInfo?.hasPreSignedExit}
+                      width="full"
+                    >
+                      Execute Emergency Exit
+                    </Button>
+                  </Box>
+                  
+                  {/* Timelock Path */}
+                  <Box mt={2}>
+                    <HStack mb={2}>
+                      <Text fontWeight="medium">2. Use Timelock Recovery Path</Text>
+                      <Badge colorScheme={isTimelockExpired ? "green" : "orange"}>
+                        {isTimelockExpired ? "Available" : "Not Yet Available"}
+                      </Badge>
+                    </HStack>
+                    <Text fontSize="sm" mb={3}>
+                      After the timelock expires, you can unilaterally withdraw your funds 
+                      using just your key, even without HashHedge's cooperation.
+                    </Text>
+                    <Button
+                      colorScheme="orange"
+                      leftIcon={<UnlockIcon />}
+                      onClick={openEmergencyModal}
+                      isDisabled={!isTimelockExpired}
+                      variant="outline"
+                      width="full"
+                    >
+                      Use Timelock Path
+                    </Button>
+                  </Box>
+                </VStack>
+              </Box>
+              
+              {/* Offline Recovery Tools */}
+              <Box p={4} borderWidth="1px" borderRadius="md">
+                <Heading size="sm" mb={3}>Offline Recovery Tools</Heading>
+                <Text fontSize="sm" mb={3}>
+                  Download tools to recover your funds even if this website is unavailable.
+                  These files contain your pre-signed exit transactions that can be broadcast 
+                  via any Bitcoin node or block explorer.
+                </Text>
+                <Button
+                  leftIcon={<DownloadIcon />}
+                  onClick={handleDownloadExitTx}
+                  colorScheme="blue"
+                  width="full"
+                >
+                  Download Exit Transactions
+                </Button>
+              </Box>
+            </VStack>
+          </TabPanel>
         </TabPanels>
       </Tabs>
+      
+      {/* Emergency Exit Modal */}
+      <Modal isOpen={isEmergencyModalOpen} onClose={closeEmergencyModal}>
+        <ModalOverlay />
+        <ModalContent>
+          <ModalHeader>Confirm Emergency Exit</ModalHeader>
+          <ModalCloseButton />
+          <ModalBody>
+            <VStack spacing={4} align="stretch">
+              <Alert status="warning">
+                <AlertIcon />
+                <Box>
+                  <AlertTitle>Emergency Exit</AlertTitle>
+                  <AlertDescription>
+                    You are about to execute an emergency exit transaction. This will withdraw
+                    all your available funds to your on-chain Bitcoin address.
+                  </AlertDescription>
+                </Box>
+              </Alert>
+              
+              <FormControl>
+                <FormLabel>Withdrawal Address</FormLabel>
+                <Input
+                  placeholder="Bitcoin address"
+                  value={withdrawAddress}
+                  onChange={(e) => setWithdrawAddress(e.target.value)}
+                />
+                <FormHelperText>
+                  {!withdrawAddress && addresses?.onchain && 
+                    "Your on-chain address will be used if none is provided"}
+                </FormHelperText>
+              </FormControl>
+              
+              <FormControl>
+                <FormLabel>Fee Rate (sat/vB)</FormLabel>
+                <Slider
+                  min={1}
+                  max={25}
+                  step={1}
+                  value={selectedFeeRate}
+                  onChange={(value) => setSelectedFeeRate(value)}
+                  colorScheme="orange"
+                >
+                  <SliderTrack>
+                    <SliderFilledTrack />
+                  </SliderTrack>
+                  <SliderThumb boxSize={6} />
+                </Slider>
+                <FormHelperText>
+                  Higher fees ensure faster confirmation during network congestion
+                </FormHelperText>
+              </FormControl>
+              
+              <Box p={3} borderWidth="1px" borderRadius="md" bg="orange.50">
+                <Text fontWeight="bold" color="orange.800">Important Information</Text>
+                <Text fontSize="sm">
+                  This action will recover your funds using specialized Bitcoin transactions.
+                  The funds will be sent to your specified Bitcoin address or your default on-chain address.
+                </Text>
+              </Box>
+            </VStack>
+          </ModalBody>
+          <ModalFooter>
+            <Button variant="ghost" mr={3} onClick={closeEmergencyModal}>
+              Cancel
+            </Button>
+            <Button 
+              colorScheme="orange" 
+              onClick={handleEmergencyExit}
+              isLoading={isEmergencyExiting}
+              loadingText="Processing"
+            >
+              Confirm Emergency Exit
+            </Button>
+          </ModalFooter>
+        </ModalContent>
+      </Modal>
     </Box>
   );
 };

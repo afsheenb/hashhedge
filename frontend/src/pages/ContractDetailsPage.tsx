@@ -19,6 +19,7 @@ import { useAppDispatch, useAppSelector } from '../hooks/redux-hooks';
 import { fetchContract, fetchContractTransactions } from '../store/contract-slice';
 import Layout from '../components/layout/Layout';
 import ContractDetails from '../components/contracts/ContractDetails';
+import ContractTimelocks from '../components/contract/ContractTimelocks';
 import ContractTransactionsList from '../components/contracts/ContractTransactionsList';
 import ContractFunding from '../components/contracts/ContractFunding';
 import ContractSigningModal from '../components/contracts/ContractSigningModal';

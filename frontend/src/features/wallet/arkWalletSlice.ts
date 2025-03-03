@@ -1,302 +1,286 @@
 // src/features/wallet/arkWalletSlice.ts
 import { createSlice, createAsyncThunk, PayloadAction } from '@reduxjs/toolkit';
-import { RootState } from '../../store';
+import { api } from '../../services/api';
 
-// Import the Ark Wallet SDK
-import { InMemoryKey, Wallet, NetworkName } from '@arklabs/wallet-sdk';
-
-// Define types based on Ark Wallet SDK documentation
-interface ArkWalletBalance {
-  total: number;
-  confirmed: number;
-  unconfirmed: number;
-  available: number;
-  onchain: {
-    total: number;
-    confirmed: number;
-    unconfirmed: number;
-  };
-  offchain: {
-    total: number;
-    settled: number;
-    pending: number;
-    swept: number;
-  };
+// Define types for exit information
+interface ExitInfo {
+  hasPreSignedExit: boolean;
+  timelockStart?: number;
+  timelockExpiry?: number;
 }
 
-interface ArkAddresses {
-  onchain: string;
-  offchain: string;
-  bip21: string;
-}
-
-interface SendBitcoinParams {
-  address: string;
+// Define type for exit transactions
+interface ExitTransaction {
+  id: string;
   amount: number;
-  feeRate?: number;
+  address: string;
+  created: number;
 }
 
-interface SignTransactionParams {
-  txHex: string;
-  contractId: string;
-}
-
-interface BroadcastTransactionParams {
-  txHex: string;
-}
-
-// Wallet SDK instance - will be initialized when user connects
-let walletInstance: Wallet | null = null;
-
-// Network configuration - could be made configurable via .env files
-const NETWORK: NetworkName = 'mutinynet';
-const ESPLORA_URL = 'https://mutinynet.com/api';
-const ARK_SERVER_URL = 'https://master.mutinynet.arklabs.to';
-const ARK_SERVER_PUBLIC_KEY = 'd45fc69d4ff1f45cbba36ab1037261863c3a49c4910bc183ae975247358920b6';
-
-// Function to get the wallet instance for other components to use
-export const getWalletInstance = (): Wallet | null => {
-  return walletInstance;
-};
-
-// Initialize the wallet with a private key
-export const initializeWallet = createAsyncThunk(
-  'arkWallet/initialize',
-  async (privateKeyHex: string, { rejectWithValue }) => {
-    try {
-      // Validate private key format
-      if (!privateKeyHex.match(/^[0-9a-fA-F]{64}$/)) {
-        throw new Error('Invalid private key format. Must be 64 hex characters.');
-      }
-
-      // Create the identity from the provided private key
-      const identity = InMemoryKey.fromHex(privateKeyHex);
-
-      // Initialize the wallet with network, identity, and Ark configuration
-      const wallet = new Wallet({
-        network: NETWORK,
-        identity: identity,
-        esploraUrl: ESPLORA_URL,
-        arkServerUrl: ARK_SERVER_URL,
-        arkServerPublicKey: ARK_SERVER_PUBLIC_KEY
-      });
-
-      // Store the wallet instance for later use
-      walletInstance = wallet;
-
-      // Get addresses for the wallet
-      const addresses = wallet.getAddress();
-
-      // Get initial balance
-      const balance = await wallet.getBalance();
-
-      return {
-        addresses,
-        balance
-      };
-    } catch (error) {
-      console.error('Failed to initialize wallet:', error);
-      return rejectWithValue(error instanceof Error ? error.message : 'Failed to initialize wallet');
-    }
-  }
-);
-
-// Disconnect the wallet and clean up
-export const disconnectWallet = createAsyncThunk(
-  'arkWallet/disconnect',
-  async (_, { rejectWithValue }) => {
-    try {
-      walletInstance = null;
-      return true;
-    } catch (error) {
-      console.error('Failed to disconnect wallet:', error);
-      return rejectWithValue(error instanceof Error ? error.message : 'Failed to disconnect wallet');
-    }
-  }
-);
-
-// Fetch wallet balance
-export const fetchWalletBalance = createAsyncThunk(
-  'arkWallet/fetchBalance',
-  async (_, { rejectWithValue }) => {
-    try {
-      if (!walletInstance) {
-        throw new Error('Wallet not initialized');
-      }
-      
-      const balance = await walletInstance.getBalance();
-      return balance;
-    } catch (error) {
-      console.error('Failed to fetch wallet balance:', error);
-      return rejectWithValue(error instanceof Error ? error.message : 'Failed to fetch wallet balance');
-    }
-  }
-);
-
-// Send Bitcoin (auto-select on-chain or off-chain based on address)
-export const sendBitcoin = createAsyncThunk(
-  'arkWallet/sendBitcoin',
-  async (params: SendBitcoinParams, { rejectWithValue }) => {
-    try {
-      if (!walletInstance) {
-        throw new Error('Wallet not initialized');
-      }
-      
-      // Validate address and amount
-      if (!params.address) {
-        throw new Error('Address is required');
-      }
-      
-      if (params.amount <= 0) {
-        throw new Error('Amount must be greater than 0');
-      }
-      
-      // Send the transaction
-      const txid = await walletInstance.sendBitcoin(params);
-      return txid;
-    } catch (error) {
-      console.error('Failed to send Bitcoin:', error);
-      return rejectWithValue(error instanceof Error ? error.message : 'Failed to send Bitcoin');
-    }
-  }
-);
-
-// Send Bitcoin on-chain
-export const sendOnchain = createAsyncThunk(
-  'arkWallet/sendOnchain',
-  async (params: SendBitcoinParams, { rejectWithValue }) => {
-    try {
-      if (!walletInstance) {
-        throw new Error('Wallet not initialized');
-      }
-      
-      // Validate address and amount
-      if (!params.address) {
-        throw new Error('Address is required');
-      }
-      
-      if (params.amount <= 0) {
-        throw new Error('Amount must be greater than 0');
-      }
-      
-      // Send the on-chain transaction
-      const txid = await walletInstance.sendOnchain(params);
-      return txid;
-    } catch (error) {
-      console.error('Failed to send on-chain transaction:', error);
-      return rejectWithValue(error instanceof Error ? error.message : 'Failed to send on-chain transaction');
-    }
-  }
-);
-
-// Send Bitcoin off-chain
-export const sendOffchain = createAsyncThunk(
-  'arkWallet/sendOffchain',
-  async (params: SendBitcoinParams, { rejectWithValue }) => {
-    try {
-      if (!walletInstance) {
-        throw new Error('Wallet not initialized');
-      }
-      
-      // Validate address and amount
-      if (!params.address) {
-        throw new Error('Address is required');
-      }
-      
-      if (params.amount <= 0) {
-        throw new Error('Amount must be greater than 0');
-      }
-      
-      // Send the off-chain transaction
-      const txid = await walletInstance.sendOffchain(params);
-      return txid;
-    } catch (error) {
-      console.error('Failed to send off-chain transaction:', error);
-      return rejectWithValue(error instanceof Error ? error.message : 'Failed to send off-chain transaction');
-    }
-  }
-);
-
-// Sign a transaction
-export const signTransaction = createAsyncThunk(
-  'arkWallet/signTransaction',
-  async (params: SignTransactionParams, { rejectWithValue }) => {
-    try {
-      if (!walletInstance) {
-        throw new Error('Wallet not initialized');
-      }
-
-      // Parse the transaction hex
-      const tx = await walletInstance.parsePsbt(params.txHex);
-      
-      // Sign the transaction
-      const signedTx = await walletInstance.signPsbt(tx);
-      
-      // Finalize the transaction
-      const finalizedTx = await walletInstance.finalizePsbt(signedTx);
-      
-      // Extract the finalized transaction hex
-      const finalTxHex = walletInstance.extractPsbt(finalizedTx);
-      
-      return finalTxHex;
-    } catch (error) {
-      console.error('Failed to sign transaction:', error);
-      return rejectWithValue(error instanceof Error ? error.message : 'Failed to sign transaction');
-    }
-  }
-);
-
-// Broadcast a transaction
-export const broadcastTransaction = createAsyncThunk(
-  'arkWallet/broadcastTransaction',
-  async (params: BroadcastTransactionParams, { rejectWithValue }) => {
-    try {
-      if (!walletInstance) {
-        throw new Error('Wallet not initialized');
-      }
-      
-      // Broadcast the transaction
-      const txid = await walletInstance.broadcastTransaction(params.txHex);
-      return txid;
-    } catch (error) {
-      console.error('Failed to broadcast transaction:', error);
-      return rejectWithValue(error instanceof Error ? error.message : 'Failed to broadcast transaction');
-    }
-  }
-);
-
-// Define the initial state
-interface ArkWalletState {
+// Define types for wallet state
+interface WalletState {
   isConnected: boolean;
-  addresses: ArkAddresses | null;
-  balance: ArkWalletBalance | null;
-  userKeys: string[];
   loading: boolean;
   error: string | null;
+  addresses: {
+    onchain: string;
+    offchain: string;
+  } | null;
+  balance: {
+    total: number;
+    available: number;
+    confirmed: number;
+    onchain: {
+      confirmed: number;
+      unconfirmed: number;
+    };
+    offchain: {
+      settled: number;
+      pending: number;
+    };
+  } | null;
+  connectionStatus: 'connected' | 'disconnected' | 'reconnecting' | 'error';
+  pendingTransactions: string[];
+  failedTransactions: string[];
+  transactionHistory: any[];
+  reconnectAttempts: number;
+  exitInfo: ExitInfo | null;
+  exitTransactions: ExitTransaction[];
 }
 
-const initialState: ArkWalletState = {
+// Initial state
+const initialState: WalletState = {
   isConnected: false,
-  addresses: null,
-  balance: null,
-  userKeys: [],
   loading: false,
   error: null,
+  addresses: null,
+  balance: null,
+  connectionStatus: 'disconnected',
+  pendingTransactions: [],
+  failedTransactions: [],
+  transactionHistory: [],
+  reconnectAttempts: 0,
+  exitInfo: null,
+  exitTransactions: [],
 };
 
-// Create the slice
+// Async thunks for wallet operations
+export const initializeWallet = createAsyncThunk(
+  'wallet/initializeWallet',
+  async (privateKey: string, { rejectWithValue }) => {
+    try {
+      const response = await api.post('/wallet/initialize', { privateKey });
+      return response.data;
+    } catch (error) {
+      return rejectWithValue(error.response?.data?.message || 'Failed to initialize wallet');
+    }
+  }
+);
+
+export const disconnectWallet = createAsyncThunk(
+  'wallet/disconnectWallet',
+  async (_, { rejectWithValue }) => {
+    try {
+      await api.post('/wallet/disconnect');
+      return true;
+    } catch (error) {
+      return rejectWithValue(error.response?.data?.message || 'Failed to disconnect wallet');
+    }
+  }
+);
+
+export const reconnectWallet = createAsyncThunk(
+  'wallet/reconnectWallet',
+  async (_, { rejectWithValue, getState }) => {
+    try {
+      const state = getState() as { arkWallet: WalletState };
+      const { reconnectAttempts } = state.arkWallet;
+      
+      if (reconnectAttempts >= 3) {
+        return rejectWithValue('Maximum reconnection attempts reached');
+      }
+      
+      const response = await api.post('/wallet/reconnect');
+      return response.data;
+    } catch (error) {
+      return rejectWithValue(error.response?.data?.message || 'Failed to reconnect wallet');
+    }
+  }
+);
+
+export const fetchWalletBalance = createAsyncThunk(
+  'wallet/fetchWalletBalance',
+  async (_, { rejectWithValue }) => {
+    try {
+      const response = await api.get('/wallet/balance');
+      return response.data;
+    } catch (error) {
+      return rejectWithValue(error.response?.data?.message || 'Failed to fetch wallet balance');
+    }
+  }
+);
+
+export const sendBitcoin = createAsyncThunk(
+  'wallet/sendBitcoin',
+  async (params: { address: string; amount: number; feeRate: number }, { rejectWithValue }) => {
+    try {
+      const response = await api.post('/wallet/send', params);
+      return response.data.txid;
+    } catch (error) {
+      return rejectWithValue(error.response?.data?.message || 'Failed to send Bitcoin');
+    }
+  }
+);
+
+export const sendOnchain = createAsyncThunk(
+  'wallet/sendOnchain',
+  async (params: { address: string; amount: number; feeRate: number }, { rejectWithValue }) => {
+    try {
+      const response = await api.post('/wallet/send-onchain', params);
+      return response.data.txid;
+    } catch (error) {
+      return rejectWithValue(error.response?.data?.message || 'Failed to send on-chain');
+    }
+  }
+);
+
+export const sendOffchain = createAsyncThunk(
+  'wallet/sendOffchain',
+  async (params: { address: string; amount: number; feeRate: number }, { rejectWithValue }) => {
+    try {
+      const response = await api.post('/wallet/send-offchain', params);
+      return response.data.txid;
+    } catch (error) {
+      return rejectWithValue(error.response?.data?.message || 'Failed to send off-chain');
+    }
+  }
+);
+
+export const checkTransactionStatus = createAsyncThunk(
+  'wallet/checkTransactionStatus',
+  async (txId: string, { rejectWithValue }) => {
+    try {
+      const response = await api.get(`/wallet/transaction/${txId}`);
+      return { txId, status: response.data.status };
+    } catch (error) {
+      return rejectWithValue(error.response?.data?.message || 'Failed to check transaction status');
+    }
+  }
+);
+
+export const retryTransaction = createAsyncThunk(
+  'wallet/retryTransaction',
+  async (txId: string, { rejectWithValue }) => {
+    try {
+      const response = await api.post(`/wallet/transaction/${txId}/retry`);
+      return { txId, newTxId: response.data.txid };
+    } catch (error) {
+      return rejectWithValue(error.response?.data?.message || 'Failed to retry transaction');
+    }
+  }
+);
+
+export const clearFailedTransaction = createAsyncThunk(
+  'wallet/clearFailedTransaction',
+  async (txId: string, { rejectWithValue }) => {
+    try {
+      await api.delete(`/wallet/transaction/${txId}`);
+      return txId;
+    } catch (error) {
+      return rejectWithValue(error.response?.data?.message || 'Failed to clear transaction');
+    }
+  }
+);
+
+export const fetchTransactionHistory = createAsyncThunk(
+  'wallet/fetchTransactionHistory',
+  async (_, { rejectWithValue }) => {
+    try {
+      const response = await api.get('/wallet/transactions');
+      return response.data;
+    } catch (error) {
+      return rejectWithValue(error.response?.data?.message || 'Failed to fetch transaction history');
+    }
+  }
+);
+
+// New thunks for emergency exit functionality
+export const fetchExitInfo = createAsyncThunk(
+  'wallet/fetchExitInfo',
+  async (_, { rejectWithValue }) => {
+    try {
+      const response = await api.get('/wallet/exit-info');
+      return response.data;
+    } catch (error) {
+      return rejectWithValue(error.response?.data?.message || 'Failed to fetch exit information');
+    }
+  }
+);
+
+export const fetchExitTransactions = createAsyncThunk(
+  'wallet/fetchExitTransactions',
+  async (_, { rejectWithValue }) => {
+    try {
+      const response = await api.get('/wallet/exit-transactions');
+      return response.data;
+    } catch (error) {
+      return rejectWithValue(error.response?.data?.message || 'Failed to fetch exit transactions');
+    }
+  }
+);
+
+export const executeEmergencyExit = createAsyncThunk(
+  'wallet/executeEmergencyExit',
+  async (params: { address?: string; feeRate?: number }, { rejectWithValue }) => {
+    try {
+      const response = await api.post('/wallet/emergency-exit', params);
+      return response.data.txid;
+    } catch (error) {
+      return rejectWithValue(error.response?.data?.message || 'Failed to execute emergency exit');
+    }
+  }
+);
+
+export const downloadExitTransactions = createAsyncThunk(
+  'wallet/downloadExitTransactions',
+  async (_, { rejectWithValue }) => {
+    try {
+      const response = await api.get('/wallet/exit-transactions/download', { responseType: 'blob' });
+      
+      // Create a download link and trigger download
+      const url = window.URL.createObjectURL(new Blob([response.data]));
+      const link = document.createElement('a');
+      link.href = url;
+      link.setAttribute('download', 'emergency-exit-transactions.json');
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      
+      return true;
+    } catch (error) {
+      return rejectWithValue(error.response?.data?.message || 'Failed to download exit transactions');
+    }
+  }
+);
+
+export const broadcastEmergencyTransaction = createAsyncThunk(
+  'wallet/broadcastEmergencyTransaction',
+  async (txId: string, { rejectWithValue }) => {
+    try {
+      const response = await api.post(`/wallet/exit-transactions/${txId}/broadcast`);
+      return response.data.txid;
+    } catch (error) {
+      return rejectWithValue(error.response?.data?.message || 'Failed to broadcast exit transaction');
+    }
+  }
+);
+
+// Create the wallet slice
 const arkWalletSlice = createSlice({
   name: 'arkWallet',
   initialState,
   reducers: {
-    // Add keys to the wallet
-    addUserKey: (state, action: PayloadAction<string>) => {
-      state.userKeys.push(action.payload);
-    },
-    // Remove keys from the wallet
-    removeUserKey: (state, action: PayloadAction<string>) => {
-      state.userKeys = state.userKeys.filter(key => key !== action.payload);
-    },
+    // Any additional reducers if needed
   },
   extraReducers: (builder) => {
     // Initialize wallet
@@ -305,88 +289,226 @@ const arkWalletSlice = createSlice({
       state.error = null;
     });
     builder.addCase(initializeWallet.fulfilled, (state, action) => {
+      state.loading = false;
       state.isConnected = true;
+      state.connectionStatus = 'connected';
       state.addresses = action.payload.addresses;
       state.balance = action.payload.balance;
-      state.loading = false;
+      state.exitInfo = action.payload.exitInfo;
+      state.exitTransactions = action.payload.exitTransactions || [];
     });
     builder.addCase(initializeWallet.rejected, (state, action) => {
       state.loading = false;
       state.error = action.payload as string;
+      state.isConnected = false;
+      state.connectionStatus = 'error';
     });
-    
+
     // Disconnect wallet
     builder.addCase(disconnectWallet.pending, (state) => {
       state.loading = true;
       state.error = null;
     });
     builder.addCase(disconnectWallet.fulfilled, (state) => {
+      state.loading = false;
       state.isConnected = false;
+      state.connectionStatus = 'disconnected';
       state.addresses = null;
       state.balance = null;
-      state.loading = false;
+      state.pendingTransactions = [];
+      state.failedTransactions = [];
+      state.transactionHistory = [];
+      state.reconnectAttempts = 0;
+      state.exitInfo = null;
+      state.exitTransactions = [];
     });
     builder.addCase(disconnectWallet.rejected, (state, action) => {
       state.loading = false;
       state.error = action.payload as string;
     });
-    
+
+    // Reconnect wallet
+    builder.addCase(reconnectWallet.pending, (state) => {
+      state.loading = true;
+      state.error = null;
+      state.connectionStatus = 'reconnecting';
+    });
+    builder.addCase(reconnectWallet.fulfilled, (state, action) => {
+      state.loading = false;
+      state.isConnected = true;
+      state.connectionStatus = 'connected';
+      state.addresses = action.payload.addresses;
+      state.balance = action.payload.balance;
+      state.exitInfo = action.payload.exitInfo;
+      state.exitTransactions = action.payload.exitTransactions || [];
+      state.reconnectAttempts = 0; // Reset reconnect attempts on success
+    });
+    builder.addCase(reconnectWallet.rejected, (state, action) => {
+      state.loading = false;
+      state.error = action.payload as string;
+      state.connectionStatus = 'error';
+      state.reconnectAttempts += 1;
+    });
+
     // Fetch wallet balance
     builder.addCase(fetchWalletBalance.pending, (state) => {
       state.loading = true;
       state.error = null;
     });
     builder.addCase(fetchWalletBalance.fulfilled, (state, action) => {
-      state.balance = action.payload;
       state.loading = false;
+      state.balance = action.payload;
     });
     builder.addCase(fetchWalletBalance.rejected, (state, action) => {
       state.loading = false;
       state.error = action.payload as string;
     });
-    
-    // Common handlers for transaction actions
-    const handleTransactionPending = (state: ArkWalletState) => {
+
+    // Send Bitcoin (generic)
+    builder.addCase(sendBitcoin.pending, (state) => {
       state.loading = true;
       state.error = null;
-    };
-    
-    const handleTransactionFulfilled = (state: ArkWalletState) => {
+    });
+    builder.addCase(sendBitcoin.fulfilled, (state, action) => {
       state.loading = false;
-    };
-    
-    const handleTransactionRejected = (state: ArkWalletState, action: PayloadAction<unknown>) => {
+      state.pendingTransactions.push(action.payload);
+    });
+    builder.addCase(sendBitcoin.rejected, (state, action) => {
       state.loading = false;
       state.error = action.payload as string;
-    };
-    
-    // Send Bitcoin (auto)
-    builder.addCase(sendBitcoin.pending, handleTransactionPending);
-    builder.addCase(sendBitcoin.fulfilled, handleTransactionFulfilled);
-    builder.addCase(sendBitcoin.rejected, handleTransactionRejected);
-    
-    // Send Bitcoin on-chain
-    builder.addCase(sendOnchain.pending, handleTransactionPending);
-    builder.addCase(sendOnchain.fulfilled, handleTransactionFulfilled);
-    builder.addCase(sendOnchain.rejected, handleTransactionRejected);
-    
-    // Send Bitcoin off-chain
-    builder.addCase(sendOffchain.pending, handleTransactionPending);
-    builder.addCase(sendOffchain.fulfilled, handleTransactionFulfilled);
-    builder.addCase(sendOffchain.rejected, handleTransactionRejected);
-    
-    // Sign transaction
-    builder.addCase(signTransaction.pending, handleTransactionPending);
-    builder.addCase(signTransaction.fulfilled, handleTransactionFulfilled);
-    builder.addCase(signTransaction.rejected, handleTransactionRejected);
-    
-    // Broadcast transaction
-    builder.addCase(broadcastTransaction.pending, handleTransactionPending);
-    builder.addCase(broadcastTransaction.fulfilled, handleTransactionFulfilled);
-    builder.addCase(broadcastTransaction.rejected, handleTransactionRejected);
+    });
+
+    // Send on-chain
+    builder.addCase(sendOnchain.pending, (state) => {
+      state.loading = true;
+      state.error = null;
+    });
+    builder.addCase(sendOnchain.fulfilled, (state, action) => {
+      state.loading = false;
+      state.pendingTransactions.push(action.payload);
+    });
+    builder.addCase(sendOnchain.rejected, (state, action) => {
+      state.loading = false;
+      state.error = action.payload as string;
+    });
+
+    // Send off-chain
+    builder.addCase(sendOffchain.pending, (state) => {
+      state.loading = true;
+      state.error = null;
+    });
+    builder.addCase(sendOffchain.fulfilled, (state, action) => {
+      state.loading = false;
+      state.pendingTransactions.push(action.payload);
+    });
+    builder.addCase(sendOffchain.rejected, (state, action) => {
+      state.loading = false;
+      state.error = action.payload as string;
+    });
+
+    // Check transaction status
+    builder.addCase(checkTransactionStatus.fulfilled, (state, action) => {
+      const { txId, status } = action.payload;
+      if (status === 'confirmed') {
+        state.pendingTransactions = state.pendingTransactions.filter(id => id !== txId);
+      } else if (status === 'failed') {
+        state.pendingTransactions = state.pendingTransactions.filter(id => id !== txId);
+        if (!state.failedTransactions.includes(txId)) {
+          state.failedTransactions.push(txId);
+        }
+      }
+    });
+
+    // Retry transaction
+    builder.addCase(retryTransaction.fulfilled, (state, action) => {
+      const { txId, newTxId } = action.payload;
+      state.failedTransactions = state.failedTransactions.filter(id => id !== txId);
+      state.pendingTransactions.push(newTxId);
+    });
+
+    // Clear failed transaction
+    builder.addCase(clearFailedTransaction.fulfilled, (state, action) => {
+      state.failedTransactions = state.failedTransactions.filter(id => id !== action.payload);
+    });
+
+    // Fetch transaction history
+    builder.addCase(fetchTransactionHistory.fulfilled, (state, action) => {
+      state.transactionHistory = action.payload;
+    });
+
+    // Fetch exit info
+    builder.addCase(fetchExitInfo.pending, (state) => {
+      state.loading = true;
+      state.error = null;
+    });
+    builder.addCase(fetchExitInfo.fulfilled, (state, action) => {
+      state.loading = false;
+      state.exitInfo = action.payload;
+    });
+    builder.addCase(fetchExitInfo.rejected, (state, action) => {
+      state.loading = false;
+      state.error = action.payload as string;
+    });
+
+    // Fetch exit transactions
+    builder.addCase(fetchExitTransactions.fulfilled, (state, action) => {
+      state.exitTransactions = action.payload;
+    });
+
+    // Execute emergency exit
+    builder.addCase(executeEmergencyExit.pending, (state) => {
+      state.loading = true;
+      state.error = null;
+    });
+    builder.addCase(executeEmergencyExit.fulfilled, (state, action) => {
+      state.loading = false;
+      state.pendingTransactions.push(action.payload);
+      // Add to transaction history as a special emergency exit type
+      state.transactionHistory.unshift({
+        id: action.payload,
+        type: 'emergency-exit',
+        amount: state.balance?.available || 0,
+        fee: 0, // Will be updated when transaction is confirmed
+        status: 'pending',
+        timestamp: new Date().toISOString(),
+        confirmations: 0,
+        address: '', // Will be filled in by the backend
+        is_exit_tx: true,
+      });
+    });
+    builder.addCase(executeEmergencyExit.rejected, (state, action) => {
+      state.loading = false;
+      state.error = action.payload as string;
+    });
+
+    // Broadcast emergency transaction
+    builder.addCase(broadcastEmergencyTransaction.pending, (state) => {
+      state.loading = true;
+      state.error = null;
+    });
+    builder.addCase(broadcastEmergencyTransaction.fulfilled, (state, action) => {
+      state.loading = false;
+      state.pendingTransactions.push(action.payload);
+      // Filter out the exit transaction that was broadcast
+      state.exitTransactions = state.exitTransactions.filter(tx => tx.id !== action.meta.arg);
+      // Add to transaction history
+      state.transactionHistory.unshift({
+        id: action.payload,
+        type: 'emergency-exit',
+        amount: 0, // Will be filled in by the backend
+        fee: 0, // Will be updated when transaction is confirmed
+        status: 'pending',
+        timestamp: new Date().toISOString(),
+        confirmations: 0,
+        address: '', // Will be filled in by the backend
+        is_exit_tx: true,
+      });
+    });
+    builder.addCase(broadcastEmergencyTransaction.rejected, (state, action) => {
+      state.loading = false;
+      state.error = action.payload as string;
+    });
   },
 });
 
-// Export actions and reducer
-export const { addUserKey, removeUserKey } = arkWalletSlice.actions;
 export default arkWalletSlice.reducer;

@@ -21,6 +21,7 @@ import HashRatePage from './pages/HashRatePage';
 import ProfilePage from './pages/ProfilePage';
 import WalletPage from './pages/WalletPage';
 import NotFoundPage from './pages/NotFoundPage';
+import OfflineExitTool from './pages/OfflineExitTool';
 
 // Components
 import ProtectedRoute from './components/auth/ProtectedRoute';
@@ -53,6 +54,7 @@ const AppRoutes: React.FC = () => {
         <Route path="/hashrate" element={<HashRatePage />} />
         <Route path="/profile" element={<ProfilePage />} />
         <Route path="/wallet" element={<WalletPage />} />
+        <Route path="/emergency-exit" element={<OfflineExitTool />} />
       </Route>
       
       {/* 404 route */}
