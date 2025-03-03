@@ -1,107 +1,132 @@
-
-// src/components/wallet/WalletConnect.tsx
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
   Box,
   Button,
-  FormControl,
-  FormLabel,
-  Input,
-  InputGroup,
-  InputRightElement,
+  Flex,
+  Text,
+  VStack,
+  HStack,
+  Badge,
+  Heading,
+  Divider,
+  Menu,
+  MenuButton,
+  MenuList,
+  MenuItem,
+  IconButton,
+  useDisclosure,
   Modal,
   ModalOverlay,
   ModalContent,
   ModalHeader,
   ModalBody,
-  ModalCloseButton,
   ModalFooter,
-  useDisclosure,
+  ModalCloseButton,
   useToast,
-  FormErrorMessage,
-  VStack,
-  Text,
-  IconButton,
-  HStack,
   Alert,
   AlertIcon,
-  AlertTitle,
-  AlertDescription,
-  Progress,
-  Code,
+  Spinner,
+  useColorMode,
+  Tooltip,
 } from '@chakra-ui/react';
-import { ViewIcon, ViewOffIcon, LockIcon, UnlockIcon, ExternalLinkIcon } from '@chakra-ui/icons';
+import { ChevronDownIcon, ExternalLinkIcon, WarningIcon, CheckCircleIcon } from '@chakra-ui/icons';
 import { useAppDispatch, useAppSelector } from '../../hooks/redux-hooks';
-import { initializeWallet, disconnectWallet, fetchWalletBalance } from '../../features/wallet/arkWalletSlice';
+import {
+  connectWallet,
+  disconnectWallet,
+  fetchWalletBalance,
+  reconnectWallet
+} from '../../features/wallet/arkWalletSlice';
 
+/**
+ * WalletConnect component provides wallet connection functionality
+ * and status display for the ARK protocol wallet integration.
+ */
 const WalletConnect: React.FC = () => {
+  const [connectingWallet, setConnectingWallet] = useState(false);
+  const [checkingASP, setCheckingASP] = useState(false);
+  const [aspStatus, setAspStatus] = useState<boolean | null>(null);
+  
   const { isOpen, onOpen, onClose } = useDisclosure();
-  const [privateKey, setPrivateKey] = useState('');
-  const [showKey, setShowKey] = useState(false);
-  const [inputError, setInputError] = useState('');
-  const [connectionStep, setConnectionStep] = useState(0);
+  const toast = useToast();
+  const { colorMode } = useColorMode();
   
   const dispatch = useAppDispatch();
-  const toast = useToast();
-  const { isConnected, addresses, balance, loading, error } = useAppSelector((state) => state.arkWallet);
-
-  // Set up interval to refresh balance periodically if connected
+  const { isConnected, balance, loading, walletType, error, walletAddress } = 
+    useAppSelector((state) => state.arkWallet);
+  
+  // Check ASP status when component mounts and periodically
   useEffect(() => {
-    let intervalId: NodeJS.Timeout;
-    
-    if (isConnected) {
-      // Initial balance fetch
-      dispatch(fetchWalletBalance());
-      
-      // Set up interval to refresh balance every 30 seconds
-      intervalId = setInterval(() => {
-        dispatch(fetchWalletBalance());
-      }, 30000);
-    }
-    
-    // Clean up interval on unmount or when disconnected
-    return () => {
-      if (intervalId) {
-        clearInterval(intervalId);
+    const checkASPStatus = async () => {
+      setCheckingASP(true);
+      try {
+        // Replace with actual API call to check ASP status
+        const response = await fetch('/api/v1/status/asp');
+        const data = await response.json();
+        setAspStatus(data.isAvailable);
+      } catch (error) {
+        console.error('Failed to check ASP status:', error);
+        setAspStatus(false);
+      } finally {
+        setCheckingASP(false);
       }
     };
-  }, [isConnected, dispatch]);
-
-  const handleConnect = async () => {
-    // Reset errors and steps
-    setInputError('');
-    setConnectionStep(1);
     
-    // Basic validation
-    if (!privateKey || privateKey.trim() === '') {
-      setInputError('Private key is required');
-      setConnectionStep(0);
-      return;
-    }
-
-    try {
-      // Initialize the wallet with the provided private key
-      setConnectionStep(2);
-      await dispatch(initializeWallet(privateKey)).unwrap();
+    // Check initially
+    checkASPStatus();
+    
+    // Set up interval for periodic checks
+    const intervalId = setInterval(checkASPStatus, 60000); // Check every minute
+    
+    // Clear interval on component unmount
+    return () => clearInterval(intervalId);
+  }, []);
+  
+  // Auto-reconnect wallet if previously connected
+  useEffect(() => {
+    const attemptReconnect = async () => {
+      if (!isConnected && localStorage.getItem('walletConnected') === 'true') {
+        try {
+          await dispatch(reconnectWallet()).unwrap();
+        } catch (error) {
+          // Silent failure is acceptable for auto-reconnect
+          localStorage.removeItem('walletConnected');
+        }
+      }
+    };
+    
+    attemptReconnect();
+  }, [dispatch, isConnected]);
+  
+  // Refresh balance periodically when connected
+  useEffect(() => {
+    if (isConnected) {
+      const intervalId = setInterval(() => {
+        dispatch(fetchWalletBalance());
+      }, 30000); // Update every 30 seconds
       
-      // Success!
-      setConnectionStep(3);
+      return () => clearInterval(intervalId);
+    }
+  }, [dispatch, isConnected]);
+
+  // Handle wallet connection
+  const handleConnectWallet = async () => {
+    setConnectingWallet(true);
+    try {
+      await dispatch(connectWallet()).unwrap();
+      localStorage.setItem('walletConnected', 'true');
       toast({
         title: 'Wallet connected',
-        description: 'Your wallet has been successfully connected. You can now send and receive Bitcoin.',
+        description: 'Your wallet has been successfully connected',
         status: 'success',
-        duration: 5000,
+        duration: 3000,
         isClosable: true,
       });
-      
-      // Clear private key from state for security
-      setPrivateKey('');
-      
-      // Close the modal
-      onClose();
     } catch (err) {
-      setConnectionStep(0);
-      const errorMessage = typeof err === 'string' ? err : 'Failed to connect wallet';
+      let errorMessage = 'Failed to connect wallet';
+      if (err instanceof Error) {
+        errorMessage = err.message;
+      }
       toast({
         title: 'Connection failed',
         description: errorMessage,
@@ -109,23 +134,26 @@ const WalletConnect: React.FC = () => {
         duration: 5000,
         isClosable: true,
       });
+    } finally {
+      setConnectingWallet(false);
     }
   };
 
-  const handleDisconnect = async () => {
+  // Handle wallet disconnection
+  const handleDisconnectWallet = async () => {
     try {
       await dispatch(disconnectWallet()).unwrap();
+      localStorage.removeItem('walletConnected');
       toast({
         title: 'Wallet disconnected',
-        description: 'Your wallet has been disconnected.',
         status: 'info',
-        duration: 5000,
+        duration: 3000,
         isClosable: true,
       });
     } catch (err) {
       toast({
         title: 'Disconnect failed',
-        description: 'Failed to disconnect wallet. Please try again.',
+        description: 'Failed to disconnect wallet',
         status: 'error',
         duration: 5000,
         isClosable: true,
@@ -133,192 +161,169 @@ const WalletConnect: React.FC = () => {
     }
   };
 
-  const renderConnectionStep = () => {
-    switch (connectionStep) {
-      case 0:
-        return null;
-      case 1:
-        return <Text>Validating private key...</Text>;
-      case 2:
-        return <Text>Initializing wallet...</Text>;
-      case 3:
-        return <Text>Wallet connected successfully!</Text>;
-      default:
-        return null;
-    }
-  };
+  // Handle wallet balance refresh
+  const handleRefreshBalance = useCallback(() => {
+    dispatch(fetchWalletBalance());
+    toast({
+      title: 'Refreshing balance',
+      status: 'info',
+      duration: 2000,
+      isClosable: true,
+    });
+  }, [dispatch, toast]);
 
-  // Define the connected wallet display
-  const ConnectedWalletInfo = () => (
-    <Box p={4} borderWidth="1px" borderRadius="lg">
-      <VStack spacing={3} align="stretch">
-        <HStack>
-          <LockIcon color="green.500" />
-          <Text fontWeight="bold" color="green.500">Wallet Connected</Text>
-        </HStack>
-        
-        {addresses && (
-          <>
-            <Text fontWeight="medium">Bitcoin Address:</Text>
-            <Code p={2} borderRadius="md" fontSize="sm" overflowX="auto">
-              {addresses.onchain}
-            </Code>
+  // Render wallet status modal
+  const renderWalletStatusModal = () => (
+    <Modal isOpen={isOpen} onClose={onClose} size="lg">
+      <ModalOverlay />
+      <ModalContent>
+        <ModalHeader>Wallet Status</ModalHeader>
+        <ModalCloseButton />
+        <ModalBody>
+          <VStack spacing={4} align="stretch">
+            <Box p={4} borderWidth="1px" borderRadius="md" bg={colorMode === 'light' ? 'gray.50' : 'gray.700'}>
+              <Heading size="sm" mb={3}>Connection</Heading>
+              <HStack justify="space-between">
+                <Text>Status:</Text>
+                <Badge colorScheme={isConnected ? 'green' : 'red'}>
+                  {isConnected ? 'Connected' : 'Disconnected'}
+                </Badge>
+              </HStack>
+              <HStack justify="space-between" mt={2}>
+                <Text>Wallet Type:</Text>
+                <Text>{walletType || 'None'}</Text>
+              </HStack>
+              {walletAddress && (
+                <HStack justify="space-between" mt={2}>
+                  <Text>Address:</Text>
+                  <Text fontSize="sm" fontFamily="monospace">{walletAddress}</Text>
+                </HStack>
+              )}
+            </Box>
             
-            <Text fontWeight="medium">Ark Address:</Text>
-            <Code p={2} borderRadius="md" fontSize="sm" overflowX="auto">
-              {addresses.offchain}
-            </Code>
-          </>
-        )}
-        
-        {balance && (
-          <Box mt={2}>
-            <Text fontWeight="medium">Balance:</Text>
-            <HStack spacing={4} mt={1}>
-              <Box p={2} borderWidth="1px" borderRadius="md" flex="1">
-                <Text fontSize="sm" color="gray.500">Total</Text>
-                <Text fontWeight="bold">{balance.total.toLocaleString()} sats</Text>
+            <Box p={4} borderWidth="1px" borderRadius="md" bg={colorMode === 'light' ? 'gray.50' : 'gray.700'}>
+              <Heading size="sm" mb={3}>ARK Service Provider</Heading>
+              <HStack justify="space-between">
+                <Text>Status:</Text>
+                {checkingASP ? (
+                  <Spinner size="sm" />
+                ) : (
+                  <Badge colorScheme={aspStatus ? 'green' : 'red'}>
+                    {aspStatus ? 'Available' : 'Unavailable'}
+                  </Badge>
+                )}
+              </HStack>
+              {!aspStatus && (
+                <Alert status="warning" mt={2} size="sm">
+                  <AlertIcon />
+                  <Text fontSize="sm">
+                    ARK Service Provider is currently unavailable. Emergency exit options are available.
+                  </Text>
+                </Alert>
+              )}
+            </Box>
+            
+            {isConnected && (
+              <Box p={4} borderWidth="1px" borderRadius="md" bg={colorMode === 'light' ? 'gray.50' : 'gray.700'}>
+                <Heading size="sm" mb={3}>Balance</Heading>
+                {loading ? (
+                  <Spinner />
+                ) : (
+                  <>
+                    <HStack justify="space-between">
+                      <Text>Total:</Text>
+                      <Text fontWeight="bold">{balance?.total?.toLocaleString() || 0} sats</Text>
+                    </HStack>
+                    <HStack justify="space-between" mt={2}>
+                      <Text>Available:</Text>
+                      <Text>{balance?.available?.toLocaleString() || 0} sats</Text>
+                    </HStack>
+                    <HStack justify="space-between" mt={2}>
+                      <Text>Locked:</Text>
+                      <Text>{balance?.locked?.toLocaleString() || 0} sats</Text>
+                    </HStack>
+                    <HStack justify="space-between" mt={2}>
+                      <Text>Pending:</Text>
+                      <Text>{balance?.pending?.toLocaleString() || 0} sats</Text>
+                    </HStack>
+                    <Button size="sm" mt={4} onClick={handleRefreshBalance} isLoading={loading}>
+                      Refresh Balance
+                    </Button>
+                  </>
+                )}
               </Box>
-              <Box p={2} borderWidth="1px" borderRadius="md" flex="1">
-                <Text fontSize="sm" color="gray.500">Confirmed</Text>
-                <Text fontWeight="bold">{balance.confirmed.toLocaleString()} sats</Text>
-              </Box>
-            </HStack>
-          </Box>
-        )}
-        
-        <Button 
-          colorScheme="red" 
-          variant="outline" 
-          leftIcon={<UnlockIcon />}
-          onClick={handleDisconnect}
-          isLoading={loading}
-          loadingText="Disconnecting"
-          mt={2}
-        >
-          Disconnect Wallet
-        </Button>
-      </VStack>
-    </Box>
+            )}
+            
+            {error && (
+              <Alert status="error">
+                <AlertIcon />
+                <Text>{error}</Text>
+              </Alert>
+            )}
+          </VStack>
+        </ModalBody>
+        <ModalFooter>
+          {isConnected ? (
+            <Button colorScheme="red" onClick={handleDisconnectWallet}>
+              Disconnect Wallet
+            </Button>
+          ) : (
+            <Button colorScheme="blue" onClick={handleConnectWallet} isLoading={connectingWallet}>
+              Connect Wallet
+            </Button>
+          )}
+        </ModalFooter>
+      </ModalContent>
+    </Modal>
   );
 
+  // Main button component
   return (
     <>
       {isConnected ? (
-        <ConnectedWalletInfo />
+        <Menu>
+          <MenuButton 
+            as={Button} 
+            rightIcon={<ChevronDownIcon />}
+            leftIcon={<CheckCircleIcon color="green.500" />}
+            variant="outline"
+            colorScheme="blue"
+          >
+            {balance?.available?.toLocaleString() || 0} sats
+          </MenuButton>
+          <MenuList>
+            <MenuItem onClick={onOpen}>Wallet Status</MenuItem>
+            <MenuItem onClick={handleRefreshBalance} isDisabled={loading}>
+              Refresh Balance
+            </MenuItem>
+            <MenuItem as="a" href="/wallet" icon={<ExternalLinkIcon />}>
+              Manage Wallet
+            </MenuItem>
+            {!aspStatus && (
+              <MenuItem as="a" href="/emergency-exit" icon={<WarningIcon color="red.500" />}>
+                Emergency Exit
+              </MenuItem>
+            )}
+            <Divider my={2} />
+            <MenuItem onClick={handleDisconnectWallet} color="red.500">
+              Disconnect
+            </MenuItem>
+          </MenuList>
+        </Menu>
       ) : (
-        <Box 
-          p={4} 
-          borderWidth="1px" 
-          borderRadius="lg"
-          display="flex"
-          flexDirection="column"
-          alignItems="center"
-        >
-          <Text mb={4}>Connect your wallet to access Bitcoin transactions.</Text>
-          <Button 
-            colorScheme="green" 
-            leftIcon={<LockIcon />}
-            onClick={onOpen}
-            isLoading={loading}
+        <Tooltip hasArrow label={connectingWallet ? 'Connecting...' : 'Connect your wallet to use the platform'}>
+          <Button
+            colorScheme="blue"
+            onClick={handleConnectWallet}
+            isLoading={connectingWallet}
             loadingText="Connecting"
           >
             Connect Wallet
           </Button>
-        </Box>
+        </Tooltip>
       )}
-
-      <Modal 
-        isOpen={isOpen} 
-        onClose={() => {
-          setConnectionStep(0);
-          onClose();
-        }}
-        size="md"
-      >
-        <ModalOverlay />
-        <ModalContent>
-          <ModalHeader>Connect Ark Wallet</ModalHeader>
-          <ModalCloseButton />
-          <ModalBody>
-            <VStack spacing={4}>
-              <Alert status="info" borderRadius="md">
-                <AlertIcon />
-                <Box>
-                  <AlertTitle>Secure Connection</AlertTitle>
-                  <AlertDescription>
-                    Your private key never leaves your browser and is never stored permanently.
-                  </AlertDescription>
-                </Box>
-              </Alert>
-
-              <FormControl isInvalid={!!inputError}>
-                <FormLabel>Private Key (hex format)</FormLabel>
-                <InputGroup>
-                  <Input
-                    type={showKey ? 'text' : 'password'}
-                    placeholder="Enter your private key"
-                    value={privateKey}
-                    onChange={(e) => {
-                      setPrivateKey(e.target.value);
-                      setInputError('');
-                    }}
-                  />
-                  <InputRightElement>
-                    <IconButton
-                      aria-label={showKey ? 'Hide private key' : 'Show private key'}
-                      icon={showKey ? <ViewOffIcon /> : <ViewIcon />}
-                      variant="ghost"
-                      onClick={() => setShowKey(!showKey)}
-                      size="sm"
-                    />
-                  </InputRightElement>
-                </InputGroup>
-                {inputError && <FormErrorMessage>{inputError}</FormErrorMessage>}
-                <Text fontSize="xs" mt={1}>Format: 64 character hex string</Text>
-              </FormControl>
-
-              <Alert status="warning" borderRadius="md">
-                <AlertIcon />
-                <Box>
-                  <AlertTitle>Security Warning</AlertTitle>
-                  <AlertDescription>
-                    Never share your private key with anyone. This key controls all your funds.
-                  </AlertDescription>
-                </Box>
-              </Alert>
-
-              {connectionStep > 0 && (
-                <Box w="100%">
-                  <Progress 
-                    value={(connectionStep / 3) * 100} 
-                    size="sm" 
-                    colorScheme="green" 
-                    borderRadius="md"
-                    mb={2}
-                    isAnimated
-                  />
-                  {renderConnectionStep()}
-                </Box>
-              )}
-            </VStack>
-          </ModalBody>
-          <ModalFooter>
-            <Button variant="ghost" mr={3} onClick={onClose}>
-              Cancel
-            </Button>
-            <Button 
-              colorScheme="blue" 
-              onClick={handleConnect}
-              isLoading={loading}
-              loadingText="Connecting"
-              isDisabled={connectionStep > 0}
-            >
-              Connect
-            </Button>
-          </ModalFooter>
-        </ModalContent>
-      </Modal>
+      
+      {renderWalletStatusModal()}
     </>
   );
 };

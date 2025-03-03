@@ -22,11 +22,20 @@ import {
   Spinner,
   Flex,
   useColorMode,
+  Tooltip,
+  Stack,
+  Heading,
+  AlertTitle,
+  AlertDescription,
 } from '@chakra-ui/react';
-import { CheckIcon, WarningIcon } from '@chakra-ui/icons';
+import { CheckIcon, WarningIcon, InfoIcon, ExternalLinkIcon } from '@chakra-ui/icons';
 import { useAppDispatch, useAppSelector } from '../../hooks/redux-hooks';
 import { Contract, ContractTransaction } from '../../types';
-import { signTransaction, broadcastTransaction } from '../../features/wallet/arkWalletSlice';
+import { 
+  signTransaction, 
+  broadcastTransaction,
+  checkTransactionStatus
+} from '../../features/wallet/arkWalletSlice';
 import { broadcastTx } from '../../store/contract-slice';
 
 interface ContractSigningModalProps {
@@ -44,14 +53,21 @@ const ContractSigningModal: React.FC<ContractSigningModalProps> = ({
   transaction,
   onSuccess,
 }) => {
+  // State for transaction signing and broadcasting
   const [signedTx, setSignedTx] = useState<string | null>(null);
   const [txid, setTxid] = useState<string | null>(null);
   const [signingStep, setSigningStep] = useState<number>(0);
   const [error, setError] = useState<string | null>(null);
+  const [useEmergencyPath, setUseEmergencyPath] = useState<boolean>(false);
+  const [aspStatus, setAspStatus] = useState<boolean | null>(null);
+  const [checkingASP, setCheckingASP] = useState<boolean>(false);
   
+  // UI state
   const toast = useToast();
   const dispatch = useAppDispatch();
   const { colorMode } = useColorMode();
+  
+  // Get wallet state from Redux
   const { isConnected, loading: walletLoading } = useAppSelector((state) => state.arkWallet);
   
   // Reset state when modal is opened with a new transaction
@@ -61,8 +77,32 @@ const ContractSigningModal: React.FC<ContractSigningModalProps> = ({
       setTxid(null);
       setSigningStep(0);
       setError(null);
+      setUseEmergencyPath(false);
+      checkASPStatus();
     }
   }, [isOpen, transaction]);
+  
+  // Check ASP status
+  const checkASPStatus = async () => {
+    setCheckingASP(true);
+    try {
+      // Replace with actual API call to check ASP status
+      const response = await fetch('/api/v1/status/asp');
+      const data = await response.json();
+      setAspStatus(data.isAvailable);
+      
+      // If ASP is unavailable, show the emergency path option
+      if (!data.isAvailable) {
+        setUseEmergencyPath(true);
+      }
+    } catch (error) {
+      console.error('Failed to check ASP status:', error);
+      setAspStatus(false);
+      setUseEmergencyPath(true);
+    } finally {
+      setCheckingASP(false);
+    }
+  };
   
   // Validate transaction before signing
   const validateTransaction = (): boolean => {
@@ -84,6 +124,7 @@ const ContractSigningModal: React.FC<ContractSigningModalProps> = ({
     return true;
   };
   
+  // Handle transaction signing
   const handleSignTransaction = async () => {
     // Clear any previous errors
     setError(null);
@@ -99,7 +140,8 @@ const ContractSigningModal: React.FC<ContractSigningModalProps> = ({
       // Sign the transaction using the wallet
       const signed = await dispatch(signTransaction({
         txHex: transaction!.tx_hex,
-        contractId: contract.id
+        contractId: contract.id,
+        useEmergencyPath: useEmergencyPath
       })).unwrap();
       
       if (!signed) {
@@ -131,6 +173,7 @@ const ContractSigningModal: React.FC<ContractSigningModalProps> = ({
     }
   };
   
+  // Handle transaction broadcast
   const handleBroadcastTransaction = async () => {
     // Clear any previous errors
     setError(null);
@@ -144,28 +187,37 @@ const ContractSigningModal: React.FC<ContractSigningModalProps> = ({
     setSigningStep(3); // Starting broadcast
     
     try {
-      // First broadcast through the wallet
-      const broadcastResult = await dispatch(broadcastTransaction({
-        txHex: signedTx
-      })).unwrap();
+      let broadcastResult;
+      
+      if (useEmergencyPath) {
+        // Use on-chain broadcasting
+        broadcastResult = await dispatch(broadcastTransaction({
+          txHex: signedTx,
+          useEmergencyPath: true
+        })).unwrap();
+      } else {
+        // Use ARK for off-chain transactions
+        broadcastResult = await dispatch(broadcastTransaction({
+          txHex: signedTx,
+          useEmergencyPath: false
+        })).unwrap();
+        
+        // Then notify the contract system of the broadcast
+        await dispatch(broadcastTx({
+          contractId: contract.id,
+          txId: transaction.id
+        })).unwrap();
+      }
       
       if (!broadcastResult) {
         throw new Error("Broadcasting returned empty result");
       }
       
-      // Then notify the contract system of the broadcast
-      const contractResult = await dispatch(broadcastTx({
-        contractId: contract.id,
-        txId: transaction.id
-      })).unwrap();
-      
-      if (!contractResult) {
-        // Non-critical error as the transaction is already broadcast
-        console.warn("Contract system notification failed but transaction was broadcast");
-      }
-      
       setTxid(broadcastResult);
       setSigningStep(4); // Broadcast completed
+      
+      // Start polling for transaction status
+      startTransactionStatusCheck(broadcastResult);
       
       toast({
         title: 'Transaction broadcast',
@@ -189,6 +241,39 @@ const ContractSigningModal: React.FC<ContractSigningModalProps> = ({
     }
   };
   
+  // Poll for transaction status updates
+  const startTransactionStatusCheck = (transactionId: string) => {
+    const checkInterval = setInterval(async () => {
+      try {
+        const status = await dispatch(checkTransactionStatus(transactionId)).unwrap();
+        if (status.confirmed) {
+          clearInterval(checkInterval);
+          toast({
+            title: 'Transaction confirmed',
+            description: `Transaction has been confirmed with ${status.confirmations} confirmations`,
+            status: 'success',
+            duration: 5000,
+            isClosable: true,
+          });
+          
+          // Call success callback if provided
+          if (onSuccess) {
+            onSuccess();
+          }
+        }
+      } catch (error) {
+        console.error('Failed to check transaction status:', error);
+        // Don't clear interval, just continue trying
+      }
+    }, 10000); // Check every 10 seconds
+    
+    // Clear interval after 10 minutes (60 * 10 seconds)
+    setTimeout(() => {
+      clearInterval(checkInterval);
+    }, 600000);
+  };
+  
+  // Handle modal close
   const handleClose = () => {
     // If transaction was successfully broadcast and there's a success callback, call it
     if (txid && onSuccess) {
@@ -197,6 +282,7 @@ const ContractSigningModal: React.FC<ContractSigningModalProps> = ({
     onClose();
   };
   
+  // Get transaction type display
   const getTxTypeDisplay = () => {
     if (!transaction) return "Unknown";
     
@@ -214,6 +300,7 @@ const ContractSigningModal: React.FC<ContractSigningModalProps> = ({
     }
   };
   
+  // Get transaction type color
   const getTxTypeColor = () => {
     if (!transaction) return "gray";
     
@@ -231,6 +318,7 @@ const ContractSigningModal: React.FC<ContractSigningModalProps> = ({
     }
   };
   
+  // Render step indicator
   const renderStepIndicator = () => {
     if (signingStep === 0) return null;
     
@@ -289,138 +377,127 @@ const ContractSigningModal: React.FC<ContractSigningModalProps> = ({
     );
   };
   
-  return (
-    <Modal isOpen={isOpen} onClose={handleClose} size="xl">
-      <ModalOverlay />
-      <ModalContent>
-        <ModalHeader>
-          Sign Contract Transaction
+  // Render ASP status alert
+  const renderASPAlert = () => {
+    if (checkingASP) {
+      return (
+        <Alert status="info" mb={4}>
+          <AlertIcon />
+          <Flex align="center">
+            <Text mr={2}>Checking ARK Service Provider status</Text>
+            <Spinner size="sm" />
+          </Flex>
+        </Alert>
+      );
+    }
+    
+    if (aspStatus === false) {
+      return (
+        <Alert status="warning" mb={4}>
+          <AlertIcon />
+          <Box>
+            <AlertTitle>ARK Service Provider Unavailable</AlertTitle>
+            <AlertDescription>
+              The transaction will be processed using the on-chain emergency path.
+              This may take longer and incur higher fees.
+            </AlertDescription>
+          </Box>
+        </Alert>
+      );
+    }
+    
+    return null;
+  };
+return (
+  <Modal isOpen={isOpen} onClose={handleClose} size="xl">
+    <ModalOverlay />
+    <ModalContent>
+      <ModalHeader>
+        <HStack>
+          <Heading size="md">
+            Sign {getTxTypeDisplay()} Transaction
+          </Heading>
           {transaction && (
-            <Badge ml={2} colorScheme={getTxTypeColor()}>
+            <Badge colorScheme={getTxTypeColor()}>
               {getTxTypeDisplay()}
             </Badge>
           )}
-        </ModalHeader>
-        <ModalCloseButton />
+        </HStack>
+      </ModalHeader>
+      <ModalCloseButton />
+      
+      <ModalBody>
+        {/* ASP Status Alert */}
+        {renderASPAlert()}
         
-        <ModalBody>
-          <VStack align="stretch" spacing={4}>
-            {!isConnected ? (
-              <Alert status="warning">
-                <AlertIcon />
-                <Text>Please connect your wallet to sign this transaction.</Text>
-              </Alert>
-            ) : (
-              <>
-                <Text>
-                  You're about to sign a {getTxTypeDisplay()} transaction for contract {contract.id}.
-                </Text>
-                
-                {contract.contract_type && (
-                  <Alert status="info" variant="subtle">
-                    <AlertIcon />
-                    <Box>
-                      <Text fontWeight="bold">Contract Type: {contract.contract_type}</Text>
-                      <Text>Strike Hash Rate: {contract.strike_hash_rate} EH/s</Text>
-                    </Box>
-                  </Alert>
-                )}
-                
-                {error && (
-                  <Alert status="error">
-                    <AlertIcon />
-                    <Text>{error}</Text>
-                  </Alert>
-                )}
-                
-                {renderStepIndicator()}
-                
-                <Divider />
-                
-                <Box>
-                  <Text fontWeight="bold" mb={2}>Transaction Data:</Text>
-                  <Box 
-                    p={3} 
-                    borderWidth="1px" 
-                    borderRadius="md" 
-                    bg={colorMode === 'light' ? "gray.50" : "gray.700"} 
-                    maxHeight="150px" 
-                    overflowY="auto"
-                  >
-                    {transaction?.tx_hex ? (
-                      <Code 
-                        p={2} 
-                        borderRadius="md" 
-                        fontSize="xs" 
-                        whiteSpace="pre-wrap" 
-                        overflowX="auto" 
-                        bg="transparent"
-                      >
-                        {transaction.tx_hex}
-                      </Code>
-                    ) : (
-                      <Text color="gray.500">No transaction data available</Text>
-                    )}
-                  </Box>
-                </Box>
-                
-                {signedTx && (
-                  <Box>
-                    <Text fontWeight="bold" mb={2}>Signed Transaction:</Text>
-                    <Box 
-                      p={3} 
-                      borderWidth="1px" 
-                      borderRadius="md" 
-                      bg={colorMode === 'light' ? "green.50" : "green.900"} 
-                      maxHeight="150px" 
-                      overflowY="auto"
-                    >
-                      <Code 
-                        p={2} 
-                        borderRadius="md" 
-                        fontSize="xs" 
-                        whiteSpace="pre-wrap" 
-                        overflowX="auto" 
-                        bg="transparent"
-                      >
-                        {signedTx}
-                      </Code>
-                    </Box>
-                  </Box>
-                )}
-                
-                {txid && (
-                  <Alert status="success">
-                    <AlertIcon />
-                    <Box>
-                      <Text fontWeight="bold">Transaction successfully broadcast!</Text>
-                      <Text>Transaction ID: {txid}</Text>
-                    </Box>
-                  </Alert>
-                )}
-                
-                <Alert status="info">
-                  <AlertIcon />
-                  <Text>
-                    Make sure you understand the contract terms before signing this transaction.
-                    Signing and broadcasting will commit these terms to the Bitcoin blockchain.
-                  </Text>
-                </Alert>
-              </>
-            )}
-          </VStack>
-        </ModalBody>
+        {/* Emergency Path Option */}
+        {aspStatus === false && (
+          <Box mb={4}>
+            <HStack>
+              <Tooltip label="When the Ark Service Provider is unavailable, we'll use an on-chain emergency path">
+                <InfoIcon color="blue.500" />
+              </Tooltip>
+              <Text fontSize="sm">
+                Emergency On-Chain Transaction Path Activated
+              </Text>
+            </HStack>
+          </Box>
+        )}
         
-        <ModalFooter>
-          <Button variant="ghost" mr={3} onClick={handleClose}>
-            {txid ? 'Close' : 'Cancel'}
+        {/* Transaction Details */}
+        <VStack spacing={4} align="stretch">
+          {transaction && (
+            <Box 
+              p={3} 
+              borderWidth="1px" 
+              borderRadius="md" 
+              bg={colorMode === 'light' ? 'gray.50' : 'gray.700'}
+            >
+              <Text fontWeight="bold" mb={2}>Transaction Details</Text>
+              <Code 
+                p={2} 
+                borderRadius="md" 
+                fontSize="xs" 
+                whiteSpace="pre-wrap" 
+                overflowX="auto" 
+                bg="transparent"
+              >
+                {transaction.tx_hex}
+              </Code>
+            </Box>
+          )}
+          
+          {/* Signing Progress Indicator */}
+          {renderStepIndicator()}
+          
+          {/* Error Display */}
+          {error && (
+            <Alert status="error" variant="left-accent">
+              <AlertIcon as={WarningIcon} />
+              <Box>
+                <AlertTitle>Transaction Error</AlertTitle>
+                <AlertDescription>{error}</AlertDescription>
+              </Box>
+            </Alert>
+          )}
+        </VStack>
+      </ModalBody>
+      
+      <ModalFooter>
+        <HStack spacing={3}>
+          <Button 
+            variant="ghost" 
+            onClick={handleClose}
+            isDisabled={signingStep === 3 || signingStep === 4}
+          >
+            {signingStep === 4 ? 'Close' : 'Cancel'}
           </Button>
           
           {!signedTx && !txid ? (
             <Button
               colorScheme="blue"
               onClick={handleSignTransaction}
-              isLoading={signingStep === 1 || walletLoading}
+              isLoading={signingStep === 1}
               loadingText="Signing"
               isDisabled={!isConnected || !transaction?.tx_hex || signingStep === 1 || !!error}
               leftIcon={<CheckIcon />}
@@ -431,17 +508,15 @@ const ContractSigningModal: React.FC<ContractSigningModalProps> = ({
             <Button
               colorScheme="green"
               onClick={handleBroadcastTransaction}
-              isLoading={signingStep === 3 || walletLoading}
+              isLoading={signingStep === 3}
               loadingText="Broadcasting"
               isDisabled={!isConnected || !signedTx || signingStep === 3 || !!error}
             >
               Broadcast Transaction
             </Button>
           ) : null}
-        </ModalFooter>
-      </ModalContent>
-    </Modal>
-  );
-};
-
-export default ContractSigningModal;
+        </HStack>
+      </ModalFooter>
+    </ModalContent>
+  </Modal>
+);
