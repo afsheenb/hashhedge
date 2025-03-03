@@ -53,6 +53,11 @@ func NewRouter(h *Handler) http.Handler {
 			r.Get("/user/{id}", h.GetUserOrders)
 		})
 
+        r.Route("/wallet", func(r chi.Router) {
+        })
+
+        h.setupWalletRoutes(r)
+
 		// Order book routes
 		r.Get("/orderbook", h.GetOrderBook)
 	})

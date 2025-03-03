@@ -1,4 +1,3 @@
-
 HashHedge: Bitcoin Hash Rate Derivatives on Layer 2
 Project Overview
 HashHedge is a specialized financial application built on top of the Ark protocol, a Bitcoin layer 2 solution. It enables users to create, trade, and settle binary options contracts that are based on Bitcoin network hash rate. These financial instruments allow users to speculate on or hedge against future Bitcoin network hash rate changes, providing a native Bitcoin solution for miners to manage energy price fluctuations and hash rate volatility.
@@ -458,5 +457,5 @@ The market mechanism of a decentralized order book
 
 By implementing this system using VTXOs, connector outputs, and multi-transaction structures similar to Coinflip, we create a powerful financial tool that enables Bitcoin miners and investors to hedge against hash rate volatility without trusting third parties.
 This comprehensive project plan provides the foundation for developing a fully functional, secure, and user-friendly hash rate derivatives exchange on Bitcoin's layer 2.
-Final notes: remember that one of Ark's main benefits is that users do not need to rely on the ASP - they can always take a transaction on-chain if needed and turn their VTXO into a UTXO. We should make it easy for a user to download a PSBT and do this at any time. Remember also that users of HashHedge wish to speculate on whether the total network hashrate will be above or below a certain number of EH/s (and in the future, PH/s) by a certain date - blockrate binaries don't specifically allow this, but it's only a UX issue, users can certainly be presented their bets in these terms.gg
+Final notes: remember that one of Ark's main benefits is that users do not need to rely on the ASP - they can always take a transaction on-chain if needed and turn their VTXO into a UTXO. We should make it easy for a user to unilaterally exit at any time. Remember also that users of HashHedge wish to speculate on whether the total network hashrate will be above or below a certain number of EH/s (and in the future, PH/s) by a certain date - blockrate binaries don't specifically allow this, but it's only a UX issue, users can certainly be presented their bets in these terms.
 
